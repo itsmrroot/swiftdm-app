@@ -267,7 +267,10 @@ mod imp {
 
     /// No menu bar: the same shortcuts with Ctrl.
     #[derive(Default)]
-    pub struct MenuBar;
+    pub struct MenuBar {
+        // Built like the macOS one (`MenuBar::default()`).
+        _none: (),
+    }
 
     impl MenuBar {
         pub fn commands(&mut self, ctx: &egui::Context, _lang: Lang) -> Vec<Command> {

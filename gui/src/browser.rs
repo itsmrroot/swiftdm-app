@@ -261,6 +261,7 @@ impl Browser {
     }
 
     /// Where the browser looks for helpers (macOS and Linux).
+    #[cfg(not(windows))]
     fn hosts_dir(self) -> Option<PathBuf> {
         let home = dirs::home_dir()?;
         Some(match self {
