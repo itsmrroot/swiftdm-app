@@ -6,12 +6,14 @@
 mod add;
 mod app;
 mod helpers;
+mod i18n;
 mod jobs;
 mod list;
 mod settings;
 mod text;
 mod theme;
 mod thumbs;
+mod translations;
 mod update;
 
 use eframe::egui;

@@ -5,6 +5,7 @@ use egui_phosphor::regular as icon;
 use swiftdm::manager::{Item, Status};
 use swiftdm::util::{FileKind, format_eta, format_size, format_speed, host};
 
+use crate::i18n::{self, tr, trl, trlf};
 use crate::text;
 use crate::theme::{self, Palette};
 use crate::thumbs::Thumbs;
@@ -20,6 +21,19 @@ pub fn kind_icon(kind: FileKind) -> &'static str {
         FileKind::Program => icon::APP_WINDOW,
         FileKind::Document => icon::FILE_TEXT,
         FileKind::Other => icon::FILE,
+    }
+}
+
+/// The name of a kind of file, as in the sidebar.
+pub fn kind_name(kind: FileKind) -> &'static str {
+    match kind {
+        FileKind::Video => tr("Video"),
+        FileKind::Audio => tr("Music"),
+        FileKind::Image => tr("Images"),
+        FileKind::Archive => tr("Archives"),
+        FileKind::Program => tr("Programs"),
+        FileKind::Document => tr("Documents"),
+        FileKind::Other => tr("Other"),
     }
 }
 
@@ -49,14 +63,15 @@ pub enum RowAction {
     Delete(u64),
 }
 
+/// How long ago `secs` was, in logical order.
 fn date(secs: i64) -> String {
     let ago = swiftdm::util::now() - secs;
     match ago {
-        i64::MIN..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", ago / 60),
-        3600..=86_399 => format!("{} h ago", ago / 3600),
-        86_400..=172_799 => "yesterday".into(),
-        _ => format!("{} days ago", ago / 86_400),
+        i64::MIN..=59 => trl("just now").into(),
+        60..=3599 => trlf("{n} min ago", &[("n", &(ago / 60))]),
+        3600..=86_399 => trlf("{n} h ago", &[("n", &(ago / 3600))]),
+        86_400..=172_799 => trl("yesterday").into(),
+        _ => trlf("{n} days ago", &[("n", &(ago / 86_400))]),
     }
 }
 
@@ -138,41 +153,42 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
 }
 
 fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
+    // Built in logical order and reordered once, by `text::rich`.
     let size = |done: u64| match item.total {
-        Some(t) => format!("{} of {}", format_size(done), format_size(t)),
-        None => format_size(done),
+        Some(t) => trlf("{done} of {total}", &[("done", &format_size(done)), ("total", &format_size(t))]),
+        None => i18n::ltr(&format_size(done)),
     };
     let (text, color) = match item.status {
         Status::Active => match &item.stage {
-            Some(stage) => (format!("{stage}…"), p.accent),
-            None if item.done == 0 => ("Starting…".into(), p.weak),
+            Some(stage) => (format!("{}…", i18n::engine(stage)), p.accent),
+            None if item.done == 0 => (trl("Starting…").into(), p.weak),
             None => {
                 let mut parts = vec![size(item.done)];
                 if item.speed > 0.0 {
-                    parts.push(format_speed(item.speed));
+                    parts.push(i18n::ltr(&format_speed(item.speed)));
                 }
                 if let Some(e) = item.eta {
-                    parts.push(format!("{} left", format_eta(e)));
+                    parts.push(trlf("{time} left", &[("time", &format_eta(e))]));
                 }
                 (parts.join("  ·  "), p.weak)
             }
         },
-        Status::Queued => ("Waiting for its turn".into(), p.weak),
-        Status::Paused => (format!("Paused  ·  {}", size(item.done)), p.warning),
-        Status::Failed => (item.error.clone().unwrap_or_else(|| "Failed".into()), p.danger),
+        Status::Queued => (trl("Waiting for its turn").into(), p.weak),
+        Status::Paused => (format!("{}  ·  {}", trl("Paused"), size(item.done)), p.warning),
+        Status::Failed => (item.error.as_deref().map_or_else(|| trl("Failed").into(), i18n::engine), p.danger),
         Status::Done => {
             let mut parts = Vec::new();
             if let Some(t) = item.total {
-                parts.push(format_size(t));
+                parts.push(i18n::ltr(&format_size(t)));
             }
-            parts.push(host(&item.url).to_string());
+            parts.push(i18n::ltr(host(&item.url)));
             if let Some(f) = item.finished {
                 parts.push(date(f));
             }
             (parts.join("  ·  "), p.weak)
         }
     };
-    ui.add(egui::Label::new(RichText::new(text).size(12.5).color(color)).truncate());
+    ui.add(egui::Label::new(text::rich(&text).size(12.5).color(color)).truncate());
 }
 
 fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
@@ -186,25 +202,25 @@ fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
     });
     match item.status {
         Status::Active | Status::Queued => {
-            if theme::icon_button(ui, p, icon::PAUSE, "Pause", None).clicked() {
+            if theme::icon_button(ui, p, icon::PAUSE, tr("Pause"), None).clicked() {
                 action = Some(RowAction::Pause(id));
             }
         }
         Status::Paused => {
-            if theme::icon_button(ui, p, icon::PLAY, "Continue", Some(p.accent)).clicked() {
+            if theme::icon_button(ui, p, icon::PLAY, tr("Continue"), Some(p.accent)).clicked() {
                 action = Some(RowAction::Resume(id));
             }
         }
         Status::Failed => {
-            if theme::icon_button(ui, p, icon::ARROW_CLOCKWISE, "Try again", Some(p.accent)).clicked() {
+            if theme::icon_button(ui, p, icon::ARROW_CLOCKWISE, tr("Try again"), Some(p.accent)).clicked() {
                 action = Some(RowAction::Resume(id));
             }
         }
         Status::Done => {
-            if theme::icon_button(ui, p, icon::FOLDER_OPEN, "Show in folder", None).clicked() {
+            if theme::icon_button(ui, p, icon::FOLDER_OPEN, tr("Show in folder"), None).clicked() {
                 action = Some(RowAction::Reveal(id));
             }
-            if theme::icon_button(ui, p, icon::PLAY_CIRCLE, "Open", Some(p.accent)).clicked() {
+            if theme::icon_button(ui, p, icon::PLAY_CIRCLE, tr("Open"), Some(p.accent)).clicked() {
                 action = Some(RowAction::Open(id));
             }
         }
@@ -220,23 +236,23 @@ fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
 fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
     let id = item.id;
     let mut a = None;
-    let mut entry = |ui: &mut Ui, glyph: &str, label: &str, act: RowAction| {
-        if ui.button(format!("{glyph}  {label}")).clicked() {
+    let mut entry = |ui: &mut Ui, label: String, act: RowAction| {
+        if ui.button(label).clicked() {
             a = Some(act);
         }
     };
     if item.status == Status::Done {
-        entry(ui, icon::PLAY_CIRCLE, "Open", RowAction::Open(id));
-        entry(ui, icon::FOLDER_OPEN, "Show in folder", RowAction::Reveal(id));
+        entry(ui, i18n::icon_label(icon::PLAY_CIRCLE, "Open"), RowAction::Open(id));
+        entry(ui, i18n::icon_label(icon::FOLDER_OPEN, "Show in folder"), RowAction::Reveal(id));
         ui.separator();
     }
-    entry(ui, icon::COPY, "Copy link", RowAction::CopyLink(id));
-    entry(ui, icon::GLOBE, "Open link in browser", RowAction::OpenLink(id));
-    entry(ui, icon::ARROW_COUNTER_CLOCKWISE, "Download again", RowAction::Restart(id));
+    entry(ui, i18n::icon_label(icon::COPY, "Copy link"), RowAction::CopyLink(id));
+    entry(ui, i18n::icon_label(icon::GLOBE, "Open link in browser"), RowAction::OpenLink(id));
+    entry(ui, i18n::icon_label(icon::ARROW_COUNTER_CLOCKWISE, "Download again"), RowAction::Restart(id));
     ui.separator();
-    entry(ui, icon::X, "Remove from list", RowAction::Remove(id));
+    entry(ui, i18n::icon_label(icon::X, "Remove from list"), RowAction::Remove(id));
     if item.status == Status::Done {
-        entry(ui, icon::TRASH, "Delete file…", RowAction::Delete(id));
+        entry(ui, i18n::icon_label(icon::TRASH, "Delete file…"), RowAction::Delete(id));
     }
     a
 }
@@ -247,10 +263,10 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
     let done: Vec<&Item> = items.iter().filter(|i| i.status == Status::Done).collect();
     let bytes: u64 = done.iter().filter_map(|i| i.total).sum();
     let cards = [
-        (icon::DOWNLOAD_SIMPLE, "Downloading", active.to_string(), p.accent),
-        (icon::LIGHTNING, "Speed", format_speed(speed), p.warning),
-        (icon::CHECK_CIRCLE, "Completed", done.len().to_string(), p.success),
-        (icon::DATABASE, "Downloaded", format_size(bytes), p.purple),
+        (icon::DOWNLOAD_SIMPLE, tr("Downloading"), active.to_string(), p.accent),
+        (icon::LIGHTNING, tr("Speed"), format_speed(speed), p.warning),
+        (icon::CHECK_CIRCLE, tr("Completed"), done.len().to_string(), p.success),
+        (icon::DATABASE, tr("Downloaded"), format_size(bytes), p.purple),
     ];
     let gap = 10.0;
     let w = ((ui.available_width() - gap * 3.0) / 4.0).max(120.0);

@@ -11,7 +11,9 @@ use egui_phosphor::regular as icon;
 use swiftdm::tools::{self, Status, Tool};
 use swiftdm::util::format_size;
 
+use crate::i18n::{self, tr, trf, trlf};
 use crate::jobs::Job;
+use crate::text;
 use crate::theme::{self, Palette};
 
 pub struct Helpers {
@@ -21,6 +23,7 @@ pub struct Helpers {
     installing: Option<(Tool, Job<PathBuf>)>,
     queue: VecDeque<Tool>,
     update_check: Option<Job<bool>>,
+    /// In logical order (see `theme::paragraph`).
     pub error: Option<String>,
     /// Shown after the first set was installed.
     pub just_installed: bool,
@@ -88,7 +91,10 @@ impl Helpers {
                     self.installing = None;
                     if let Err(e) = r {
                         if !e.to_string().contains("cancelled") {
-                            self.error = Some(format!("{} could not be installed: {e:#}", tool.name()));
+                            self.error = Some(trlf(
+                                "{tool} could not be installed: {error}",
+                                &[("tool", &tool.name()), ("error", &i18n::engine(&format!("{e:#}")))],
+                            ));
                         }
                         self.queue.clear();
                     } else if self.queue.is_empty() {
@@ -157,17 +163,24 @@ impl Helpers {
         self.installed(Tool::Deno) || (self.known() && tools::find_on_system("node").is_some())
     }
 
-    /// Progress of the running installation, as a line for the UI.
+    /// Progress of the running installation, as a line for the UI (in
+    /// logical order).
     pub fn progress_line(&self) -> Option<(String, Option<f32>)> {
         let (tool, job) = self.installing.as_ref()?;
         let p = &job.progress;
         let size = match p.total() {
-            Some(t) => format!("{} of {}", format_size(p.done()), format_size(t)),
+            Some(t) => trlf("{done} of {total}", &[("done", &format_size(p.done())), ("total", &format_size(t))]),
             None => format_size(p.done()),
         };
-        let more =
-            if self.queue.is_empty() { String::new() } else { format!(" · {} more after this", self.queue.len()) };
-        Some((format!("Installing {} — {size}{more}", tool.name()), p.fraction()))
+        let more = if self.queue.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", trlf("{n} more after this", &[("n", &self.queue.len())]))
+        };
+        Some((
+            format!("{}{more}", trlf("Installing {tool} — {size}", &[("tool", &tool.name()), ("size", &size)])),
+            p.fraction(),
+        ))
     }
 
     /// The install progress, if any, as a bar with a Cancel button.
@@ -175,15 +188,18 @@ impl Helpers {
         if let Some((line, fraction)) = self.progress_line() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(RichText::new(line).color(p.weak));
-                if ui.small_button("Cancel").clicked() {
+                ui.label(text::rich(&line).color(p.weak));
+                if ui.small_button(tr("Cancel")).clicked() {
                     self.cancel();
                 }
             });
             theme::bar(ui, p, fraction, p.accent, ui.available_width().min(520.0));
         }
         if let Some(e) = &self.error {
-            ui.label(RichText::new(format!("{}  {e}", icon::WARNING)).color(p.danger));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::WARNING).color(p.danger));
+                theme::paragraph(ui, e, 14.0, p.danger);
+            });
         }
     }
 
@@ -209,15 +225,15 @@ impl Helpers {
                             }
                             (None, true) => {}
                             (_, false) => {
-                                theme::pill(ui, p, "Not installed", p.warning);
+                                theme::pill(ui, p, tr("Not installed"), p.warning);
                             }
                         }
                     });
-                    ui.label(RichText::new(s.tool.purpose()).color(p.weak).size(13.0));
+                    ui.label(RichText::new(purpose(s.tool)).color(p.weak).size(13.0));
                     if let Some(path) = &s.path {
                         let source =
-                            if s.managed { "SwiftDM's own copy".to_string() } else { path.display().to_string() };
-                        ui.label(RichText::new(source).color(p.weak).size(12.0));
+                            if s.managed { tr("SwiftDM's own copy").to_string() } else { path.display().to_string() };
+                        ui.label(text::rich(&source).color(p.weak).size(12.0));
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -229,18 +245,21 @@ impl Helpers {
                     if busy {
                         ui.spinner();
                     } else if s.managed {
-                        if ui.button("Remove").on_hover_text("Delete SwiftDM's own copy").clicked() {
+                        if ui.button(tr("Remove")).on_hover_text(tr("Delete SwiftDM's own copy")).clicked() {
                             if let Err(e) = tools::uninstall(s.tool) {
                                 self.error = Some(format!("{e:#}"));
                             }
                             self.refresh(&ctx);
                         }
-                        if ui.button("Update").on_hover_text("Download the newest version").clicked() {
+                        if ui.button(tr("Update")).on_hover_text(tr("Download the newest version")).clicked() {
                             self.install(&ctx, &[s.tool]);
                         }
                     } else {
-                        let label = if s.installed() { "Install own copy" } else { "Install" };
-                        let tip = format!("Download from the official source (about {})", s.tool.download_size());
+                        let label = if s.installed() { tr("Install own copy") } else { tr("Install") };
+                        let tip = trf(
+                            "Download from the official source (about {size})",
+                            &[("size", &s.tool.download_size())],
+                        );
                         if ui.button(label).on_hover_text(tip).clicked() {
                             self.install(&ctx, &[s.tool]);
                         }
@@ -250,5 +269,14 @@ impl Helpers {
             ui.add_space(6.0);
         }
         self.progress_ui(ui, p);
+    }
+}
+
+/// What `tool` is for, in the interface language.
+pub fn purpose(tool: Tool) -> &'static str {
+    match tool {
+        Tool::YtDlp => tr("Reads videos and music from 1800+ sites"),
+        Tool::Ffmpeg => tr("Joins video with sound and converts to MP3"),
+        Tool::Deno => tr("Runs the JavaScript YouTube needs"),
     }
 }

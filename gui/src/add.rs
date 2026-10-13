@@ -11,6 +11,7 @@ use swiftdm::manager::{self, Source};
 use swiftdm::media::{self, ErrorKind, Found, Info, Mode};
 use swiftdm::util::{FileKind, format_eta, format_size, sanitize_filename};
 
+use crate::i18n::{self, icon_label, tr, trf, trl};
 use crate::jobs::Job;
 use crate::list::kind_icon;
 use crate::settings::{self, Settings};
@@ -101,13 +102,13 @@ fn look(url: &str, s: &manager::Settings, stop: &AtomicBool) -> std::result::Res
                 // A page without a video: perhaps still worth saving.
                 return http::probe(url).map(Looked::File).map_err(|_| LookError {
                     kind: ErrorKind::Unsupported,
-                    message: "No video, music or file was found at this link.".into(),
+                    message: trl("No video, music or file was found at this link.").into(),
                 });
             }
             Err(e) => return Err(LookError { kind: e.kind, message: e.message }),
         }
     }
-    let e = last.unwrap_or(media::MediaError { kind: ErrorKind::Other, message: "Cancelled".into() });
+    let e = last.unwrap_or(media::MediaError { kind: ErrorKind::Other, message: trl("Cancelled").into() });
     Err(LookError { kind: e.kind, message: e.message })
 }
 
@@ -224,7 +225,7 @@ impl AddDialog {
             ui.set_width(560.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::LINK).size(22.0).color(p.accent));
-                ui.label(theme::semibold("New download", 18.0));
+                ui.label(theme::semibold(tr("New download"), 18.0));
             });
             ui.add(egui::Label::new(RichText::new(&self.url).color(p.weak).size(12.5)).truncate());
             ui.add_space(10.0);
@@ -232,11 +233,11 @@ impl AddDialog {
                 Stage::Looking(job) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Looking at the link…");
+                        ui.label(tr("Looking at the link…"));
                     });
                     ui.add_space(8.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::secondary_button(ui, "Cancel").clicked() {
+                        if theme::secondary_button(ui, tr("Cancel")).clicked() {
                             job.stop();
                             action = Action::Close;
                         }
@@ -250,22 +251,22 @@ impl AddDialog {
                         }
                         _ => (icon::WARNING_CIRCLE, p.danger),
                     };
-                    theme::notice(ui, p, color, glyph, &e.message);
+                    theme::notice(ui, p, color, glyph, &i18n::engine(&e.message));
                     ui.add_space(10.0);
                     let needs_helper =
                         matches!(e.kind, ErrorKind::NoYtDlp | ErrorKind::NeedsJs | ErrorKind::NeedsFfmpeg);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if needs_helper {
-                            if theme::primary_button(ui, p, "  Install helpers  ", true).clicked() {
+                            if theme::primary_button(ui, p, &format!("  {}  ", tr("Install helpers")), true).clicked() {
                                 action = Action::InstallHelpers;
                             }
-                        } else if theme::primary_button(ui, p, "  Try again  ", true).clicked() {
+                        } else if theme::primary_button(ui, p, &format!("  {}  ", tr("Try again")), true).clicked() {
                             action = Action::Retry;
                         }
                         if e.kind != ErrorKind::Unsupported
                             && !needs_helper
-                            && theme::secondary_button(ui, "Download as a file")
-                                .on_hover_text("Save whatever the link gives")
+                            && theme::secondary_button(ui, tr("Download as a file"))
+                                .on_hover_text(tr("Save whatever the link gives"))
                                 .clicked()
                         {
                             action = Action::Start(vec![NewDownload {
@@ -276,7 +277,7 @@ impl AddDialog {
                                 thumbnail: None,
                             }]);
                         }
-                        if theme::secondary_button(ui, "Close").clicked() {
+                        if theme::secondary_button(ui, tr("Close")).clicked() {
                             action = Action::Close;
                         }
                     });
@@ -296,18 +297,18 @@ impl AddDialog {
                     _ => settings::HEIGHTS[2..].to_vec(),
                 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Keep").color(p.weak));
+                    ui.label(RichText::new(tr("Keep")).color(p.weak));
                     ui.add_space(30.0);
                     theme::segmented(
                         ui,
                         p,
                         &mut self.mode,
-                        &[(Mode::Video, "Video"), (Mode::Audio, "Sound only (MP3)")],
+                        &[(Mode::Video, tr("Video")), (Mode::Audio, tr("Sound only (MP3)"))],
                     );
                 });
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Quality").color(p.weak));
+                    ui.label(RichText::new(tr("Quality")).color(p.weak));
                     ui.add_space(16.0);
                     if self.mode == Mode::Video {
                         if self.max_height.is_some_and(|h| !heights.contains(&h)) {
@@ -339,43 +340,43 @@ impl AddDialog {
                 if !ffmpeg {
                     ui.add_space(6.0);
                     let msg = if self.mode == Mode::Audio {
-                        "FFmpeg is not installed: the sound is saved as it is (M4A or WebM), not as MP3."
+                        trl("FFmpeg is not installed: the sound is saved as it is (M4A or WebM), not as MP3.")
                     } else {
-                        "FFmpeg is not installed: only qualities with sound in one file can be saved (often 360p)."
+                        trl("FFmpeg is not installed: only qualities with sound in one file can be saved (often 360p).")
                     };
                     theme::notice(ui, p, p.warning, icon::INFO, msg);
-                    if ui.link("Install FFmpeg").clicked() {
+                    if ui.link(tr("Install FFmpeg")).clicked() {
                         action = Action::InstallHelpers;
                     }
                 }
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Save to").color(p.weak));
+                ui.label(RichText::new(tr("Save to")).color(p.weak));
                 ui.add_space(14.0);
                 let shown = self.dir.display().to_string();
                 ui.add(egui::Label::new(RichText::new(shown)).truncate());
-                if ui.button(icon::FOLDER_OPEN).on_hover_text("Choose a folder").clicked()
+                if ui.button(icon::FOLDER_OPEN).on_hover_text(tr("Choose a folder")).clicked()
                     && let Some(d) = rfd::FileDialog::new().set_directory(&self.dir).pick_folder()
                 {
                     self.dir = d;
                 }
             });
             if let Stage::Playlist { .. } = self.stage {
-                ui.checkbox(&mut self.own_folder, "In a folder named after the playlist");
+                ui.checkbox(&mut self.own_folder, tr("In a folder named after the playlist"));
             }
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let count = self.downloads().len();
                 let label = if count > 1 {
-                    format!("  {}  Download {count}  ", icon::DOWNLOAD_SIMPLE)
+                    format!("  {}  {}  ", icon::DOWNLOAD_SIMPLE, trf("Download {n}", &[("n", &count)]))
                 } else {
-                    format!("  {}  Download  ", icon::DOWNLOAD_SIMPLE)
+                    format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Download"))
                 };
                 if theme::primary_button(ui, p, &label, count > 0).clicked() {
                     action = Action::Start(self.downloads());
                 }
-                if theme::secondary_button(ui, "Cancel").clicked() {
+                if theme::secondary_button(ui, tr("Cancel")).clicked() {
                     action = Action::Close;
                 }
             });
@@ -438,7 +439,7 @@ fn media_card(ui: &mut Ui, p: &Palette, info: &Info, thumbs: &mut Thumbs) {
             }
             ui.label(text::rich(&meta.join("  ·  ")).color(p.weak).size(13.0));
             if info.is_live {
-                theme::pill(ui, p, "Live — recorded until you stop it", p.danger);
+                theme::pill(ui, p, tr("Live — recorded until you stop it"), p.danger);
             }
         });
     });
@@ -449,17 +450,23 @@ fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry]
         ui.label(RichText::new(icon::PLAYLIST).size(26.0).color(p.accent));
         ui.vertical(|ui| {
             ui.add(
-                egui::Label::new(text::rich(if title.is_empty() { "Playlist" } else { title }).size(16.0).strong())
-                    .wrap(),
+                egui::Label::new(
+                    text::rich(if title.is_empty() { trl("Playlist") } else { title }).size(16.0).strong(),
+                )
+                .wrap(),
             );
             let n = selected.iter().filter(|s| **s).count();
-            ui.label(RichText::new(format!("{n} of {} selected", entries.len())).color(p.weak).size(13.0));
+            ui.label(
+                RichText::new(trf("{n} of {total} selected", &[("n", &n), ("total", &entries.len())]))
+                    .color(p.weak)
+                    .size(13.0),
+            );
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("None").clicked() {
+            if ui.small_button(tr("None")).clicked() {
                 selected.iter_mut().for_each(|s| *s = false);
             }
-            if ui.small_button("All").clicked() {
+            if ui.small_button(tr("All")).clicked() {
                 selected.iter_mut().for_each(|s| *s = true);
             }
         });
@@ -495,12 +502,12 @@ fn file_card(ui: &mut Ui, p: &Palette, probe: &Probe, name: &mut String) {
         let kind = FileKind::of(name);
         ui.label(RichText::new(kind_icon(kind)).size(34.0).color(p.accent));
         ui.vertical(|ui| {
-            ui.add(egui::TextEdit::singleline(name).desired_width(440.0).hint_text("File name"));
-            let size = probe.size.map(format_size).unwrap_or_else(|| "Size unknown".into());
+            ui.add(egui::TextEdit::singleline(name).desired_width(440.0).hint_text(tr("File name")));
+            let size = probe.size.map(format_size).unwrap_or_else(|| tr("Size unknown").into());
             let how = if probe.resumable {
-                "Fast: several connections, can be paused"
+                tr("Fast: several connections, can be paused")
             } else {
-                "One connection, cannot be paused"
+                tr("One connection, cannot be paused")
             };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(size).color(p.weak));
@@ -517,7 +524,7 @@ fn file_card(ui: &mut Ui, p: &Palette, probe: &Probe, name: &mut String) {
             p,
             p.warning,
             icon::INFO,
-            "This link opens a web page, not a file. No video was found on it either.",
+            trl("This link opens a web page, not a file. No video was found on it either."),
         );
     }
 }

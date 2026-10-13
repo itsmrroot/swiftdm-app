@@ -13,6 +13,7 @@ use swiftdm::util::{FileKind, is_link};
 
 use crate::add::{self, AddDialog};
 use crate::helpers::Helpers;
+use crate::i18n::{self, icon_label, tr, trl};
 use crate::list::{self, RowAction};
 use crate::settings::{self, Settings};
 use crate::text;
@@ -55,18 +56,20 @@ impl Filter {
 
     fn title(self) -> &'static str {
         match self {
-            Filter::All => "All downloads",
-            Filter::Active => "Downloading",
-            Filter::Done => "Completed",
-            Filter::Paused => "Paused",
-            Filter::Failed => "Failed",
-            Filter::Kind(k) => k.name(),
+            Filter::All => tr("All downloads"),
+            Filter::Active => tr("Downloading"),
+            Filter::Done => tr("Completed"),
+            Filter::Paused => tr("Paused"),
+            Filter::Failed => tr("Failed"),
+            Filter::Kind(k) => list::kind_name(k),
         }
     }
 }
 
 struct Toast {
+    /// Ready to display (`tr`).
     text: String,
+    /// In logical order: titles, file names, messages.
     detail: String,
     glyph: &'static str,
     color: Color32,
@@ -84,6 +87,8 @@ enum ToastTarget {
 pub struct App {
     settings: Settings,
     applied: Option<(Accent, f32, ThemeChoice)>,
+    /// The interface language the fonts were set up for.
+    language: i18n::Lang,
     applied_manager: Option<swiftdm::manager::Settings>,
     manager: Manager,
     page: Page,
@@ -113,9 +118,21 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
+        #[allow(unused_mut)]
+        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
+        // Development aid: screenshots in each language ("ar", "de", "tr").
+        #[cfg(debug_assertions)]
+        if let Ok(l) = std::env::var("SWIFTDM_LANG") {
+            settings.language = match l.as_str() {
+                "ar" => i18n::Language::Arabic,
+                "de" => i18n::Language::German,
+                "tr" => i18n::Language::Turkish,
+                _ => i18n::Language::English,
+            };
+        }
         let ctx = &cc.egui_ctx;
-        theme::install_fonts(ctx, false);
+        let lang = i18n::set_language(settings.language);
+        theme::install_fonts(ctx, lang, false);
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let logo = {
             let img = image::load_from_memory(include_bytes!("../assets/icon.png")).map(|i| i.to_rgba8());
@@ -145,6 +162,7 @@ impl App {
             helpers: Helpers::new(ctx, settings.keep_ytdlp_updated),
             settings,
             applied: None,
+            language: lang,
             applied_manager: None,
             manager,
             page: Page::Downloads,
@@ -166,6 +184,13 @@ impl App {
             cjk_checked: Instant::now(),
             focus_url: true,
         };
+        // Development aid: open a page for screenshots.
+        #[cfg(debug_assertions)]
+        match std::env::var("SWIFTDM_PAGE").as_deref() {
+            Ok("settings") => app.page = Page::Settings,
+            Ok("about") => app.page = Page::About,
+            _ => {}
+        }
         // Links given when starting ("Open with", scripts, browser add-ons).
         let links: Vec<String> = std::env::args().skip(1).filter(|a| is_link(a)).collect();
         if !links.is_empty() {
@@ -193,6 +218,12 @@ impl App {
             ctx.set_zoom_factor(self.settings.ui_scale);
             self.applied = Some(want);
         }
+        let lang = i18n::set_language(self.settings.language);
+        if lang != self.language {
+            // Arabic needs its font first (see `i18n`).
+            theme::install_fonts(ctx, lang, self.cjk_loaded);
+            self.language = lang;
+        }
         let m = self.settings.manager();
         if self.applied_manager.as_ref() != Some(&m) {
             self.manager.set_settings(m.clone());
@@ -207,7 +238,7 @@ impl App {
             self.toast(
                 icon::WARNING,
                 Color32::from_rgb(245, 158, 11),
-                "That is not a link",
+                tr("That is not a link"),
                 text.trim(),
                 ToastTarget::None,
             );
@@ -300,11 +331,11 @@ impl App {
         for (id, status, name, error) in news {
             match status {
                 Status::Done => {
-                    self.toast(icon::CHECK_CIRCLE, p.success, "Download complete", &name, ToastTarget::Item(id))
+                    self.toast(icon::CHECK_CIRCLE, p.success, tr("Download complete"), &name, ToastTarget::Item(id))
                 }
                 Status::Failed => {
-                    let detail = format!("{name}\n{}", error.unwrap_or_default());
-                    self.toast(icon::WARNING_CIRCLE, p.danger, "Download failed", &detail, ToastTarget::None)
+                    let detail = format!("{name}\n{}", i18n::engine(&error.unwrap_or_default()));
+                    self.toast(icon::WARNING_CIRCLE, p.danger, tr("Download failed"), &detail, ToastTarget::None)
                 }
                 _ => {}
             }
@@ -312,7 +343,7 @@ impl App {
         if !self.cjk_loaded && self.cjk_checked.elapsed() > Duration::from_secs(1) {
             self.cjk_checked = Instant::now();
             if items.iter().any(|i| text::has_cjk(&i.name)) {
-                theme::install_fonts(ctx, true);
+                theme::install_fonts(ctx, self.language, true);
                 self.cjk_loaded = true;
             }
         }
@@ -334,7 +365,7 @@ impl App {
         let known = self.manager.items().iter().any(|i| i.url == text) || self.adds.iter().any(|d| d.url == text);
         if is_link(&text) && !known {
             let host = swiftdm::util::host(&text).to_string();
-            self.toast(icon::CLIPBOARD_TEXT, p.accent, "Download the copied link?", &host, ToastTarget::Link(text));
+            self.toast(icon::CLIPBOARD_TEXT, p.accent, tr("Download the copied link?"), &host, ToastTarget::Link(text));
             if !ctx.input(|i| i.focused) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                     egui::UserAttentionType::Informational,
@@ -360,7 +391,7 @@ impl App {
                         self.toast(
                             icon::WARNING,
                             Color32::from_rgb(245, 158, 11),
-                            "The file is not there any more",
+                            tr("The file is not there any more"),
                             &path.display().to_string(),
                             ToastTarget::None,
                         );
@@ -407,7 +438,7 @@ impl App {
             ui.vertical(|ui| {
                 ui.add_space(2.0);
                 ui.label(theme::semibold("SwiftDM", 18.0).color(p.text));
-                ui.label(RichText::new("Download manager").color(p.weak).size(12.5));
+                ui.label(RichText::new(tr("Download manager")).color(p.weak).size(12.5));
             });
         });
         // Settings and friends stay at the bottom; the filters scroll above.
@@ -416,17 +447,17 @@ impl App {
             |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     ui.add_space(14.0);
-                    let version = format!("Version {}", update::current());
+                    let version = i18n::trf("Version {version}", &[("version", &update::current())]);
                     ui.label(RichText::new(version).color(p.weak).size(12.0));
                     ui.add_space(4.0);
-                    if nav_item(ui, p, icon::INFO, "About", self.page == Page::About, None).clicked() {
+                    if nav_item(ui, p, icon::INFO, tr("About"), self.page == Page::About, None).clicked() {
                         self.page = Page::About;
                     }
                     let badge = self.updater.available().map(|_| "●");
-                    if nav_item(ui, p, icon::GEAR_SIX, "Settings", self.page == Page::Settings, badge).clicked() {
+                    if nav_item(ui, p, icon::GEAR_SIX, tr("Settings"), self.page == Page::Settings, badge).clicked() {
                         self.page = Page::Settings;
                     }
-                    if nav_item(ui, p, icon::FOLDER_OPEN, "Download folder", false, None).clicked() {
+                    if nav_item(ui, p, icon::FOLDER_OPEN, tr("Download folder"), false, None).clicked() {
                         let _ = std::fs::create_dir_all(&self.settings.download_dir);
                         let _ = swiftdm::util::open_path(&self.settings.download_dir);
                     }
@@ -437,7 +468,7 @@ impl App {
         let count = |f: Filter| items.iter().filter(|i| f.matches(i)).count();
         let on_list = self.page == Page::Downloads;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            group_label(ui, p, "DOWNLOADS");
+            group_label(ui, p, tr("DOWNLOADS"));
             for (f, glyph) in [
                 (Filter::All, icon::LIST),
                 (Filter::Active, icon::DOWNLOAD_SIMPLE),
@@ -453,7 +484,7 @@ impl App {
                 }
             }
             ui.add_space(8.0);
-            group_label(ui, p, "TYPE");
+            group_label(ui, p, tr("TYPE"));
             for k in [
                 FileKind::Video,
                 FileKind::Audio,
@@ -465,8 +496,15 @@ impl App {
                 let f = Filter::Kind(k);
                 let n = count(f);
                 let badge = (n > 0).then(|| n.to_string());
-                if nav_item(ui, p, list::kind_icon(k), k.name(), on_list && self.filter == f, badge.as_deref())
-                    .clicked()
+                if nav_item(
+                    ui,
+                    p,
+                    list::kind_icon(k),
+                    list::kind_name(k),
+                    on_list && self.filter == f,
+                    badge.as_deref(),
+                )
+                .clicked()
                 {
                     self.filter = f;
                     self.page = Page::Downloads;
@@ -488,11 +526,11 @@ impl App {
                     let mut submit = false;
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let busy = self.adds.iter().any(|d| d.quick && d.looking());
-                        let label = format!("  {}  Download  ", icon::DOWNLOAD_SIMPLE);
+                        let label = format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Download"));
                         if theme::primary_button(ui, p, &label, !self.url.trim().is_empty()).clicked() {
                             submit = true;
                         }
-                        if theme::icon_button(ui, p, icon::CLIPBOARD_TEXT, "Paste", Some(p.accent)).clicked()
+                        if theme::icon_button(ui, p, icon::CLIPBOARD_TEXT, tr("Paste"), Some(p.accent)).clicked()
                             && let Some(t) = self.clipboard.as_mut().and_then(|c| c.get_text().ok())
                         {
                             self.clip_last = t.trim().to_string();
@@ -502,7 +540,7 @@ impl App {
                             ui.spinner();
                         }
                         let edit = egui::TextEdit::singleline(&mut self.url)
-                            .hint_text("Paste a link — YouTube, TikTok, Instagram, X, any file…")
+                            .hint_text(tr("Paste a link — YouTube, TikTok, Instagram, X, any file…"))
                             .frame(egui::Frame::NONE)
                             .font(egui::FontId::proportional(16.0))
                             .desired_width(f32::INFINITY);
@@ -546,26 +584,16 @@ impl App {
                     ui.painter().rect_filled(rect, CornerRadius::same(12), p.tint(p.accent));
                     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon::SPARKLE, egui::FontId::proportional(24.0), p.accent);
                     ui.vertical(|ui| {
-                        let title = if missing_ytdlp { "One step to download from video sites" } else { "Finish setting up video sites" };
+                        let title = if missing_ytdlp { tr("One step to download from video sites") } else { tr("Finish setting up video sites") };
                         ui.label(theme::semibold(title, 16.0));
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    "SwiftDM uses free helpers (yt-dlp, FFmpeg, Deno) for YouTube, TikTok, Instagram and \
-                                     1800+ more sites. They are downloaded once from their official sources (about 120 MB). \
-                                     Plain file links work without them.",
-                                )
-                                .color(p.weak),
-                            )
-                            .wrap(),
-                        );
+                        theme::paragraph(ui, trl("SwiftDM uses free helpers (yt-dlp, FFmpeg, Deno) for YouTube, TikTok, Instagram and 1800+ more sites. They are downloaded once from their official sources (about 120 MB). Plain file links work without them."), 14.5, p.weak);
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            if theme::primary_button(ui, p, &format!("  {}  Install helpers  ", icon::DOWNLOAD_SIMPLE), true).clicked() {
+                            if theme::primary_button(ui, p, &format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Install helpers")), true).clicked() {
                                 self.helpers.install_missing(&ctx);
                                 self.settings.welcomed = true;
                             }
-                            if !missing_ytdlp && theme::secondary_button(ui, "Not now").clicked() {
+                            if !missing_ytdlp && theme::secondary_button(ui, tr("Not now")).clicked() {
                                 self.settings.welcomed = true;
                             }
                         });
@@ -599,25 +627,25 @@ impl App {
                 let done = items.iter().filter(|i| i.status == Status::Done).count();
                 if done > 0
                     && ui
-                        .button(format!("{}  Clear completed", icon::BROOM))
-                        .on_hover_text("Remove finished downloads from the list (the files stay)")
+                        .button(icon_label(icon::BROOM, "Clear completed"))
+                        .on_hover_text(tr("Remove finished downloads from the list (the files stay)"))
                         .clicked()
                 {
                     self.manager.clear_finished();
                 }
                 if items.iter().any(|i| i.status == Status::Paused)
-                    && ui.button(format!("{}  Continue all", icon::PLAY)).clicked()
+                    && ui.button(icon_label(icon::PLAY, "Continue all")).clicked()
                 {
                     self.manager.resume_all();
                 }
                 if items.iter().any(|i| matches!(i.status, Status::Active | Status::Queued))
-                    && ui.button(format!("{}  Pause all", icon::PAUSE)).clicked()
+                    && ui.button(icon_label(icon::PAUSE, "Pause all")).clicked()
                 {
                     self.manager.pause_all();
                 }
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(format!("{}  Search", icon::MAGNIFYING_GLASS))
+                        .hint_text(icon_label(icon::MAGNIFYING_GLASS, "Search"))
                         .desired_width(200.0),
                 );
             });
@@ -656,27 +684,17 @@ impl App {
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.label(theme::semibold("SwiftDM", 30.0));
-                    ui.label(RichText::new(format!("Version {}", update::current())).color(p.weak));
+                    ui.label(RichText::new(i18n::trf("Version {version}", &[("version", &update::current())])).color(p.weak));
                     ui.label(RichText::new("Powered by Bashar Salmo").color(p.accent));
                 });
             });
             ui.add_space(14.0);
-            ui.add(
-                egui::Label::new(
-                    RichText::new(
-                        "Download videos, music and files from any link: YouTube, TikTok, Instagram, X, Facebook, \
-                         SoundCloud, Vimeo and 1800+ more sites, or any direct file — fast, over several connections, \
-                         and resumable.",
-                    )
-                    .size(15.0),
-                )
-                .wrap(),
-            );
+            theme::paragraph(ui, trl("Download videos, music and files from any link: YouTube, TikTok, Instagram, X, Facebook, SoundCloud, Vimeo and 1800+ more sites, or any direct file — fast, over several connections, and resumable."), 15.0, p.text);
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.hyperlink_to(format!("{}  Downloads and news", icon::GITHUB_LOGO), update::REPO);
+                ui.hyperlink_to(icon_label(icon::GITHUB_LOGO, "Downloads and news"), update::REPO);
                 ui.label(RichText::new("·").color(p.weak));
-                ui.hyperlink_to(format!("{}  Report a problem", icon::BUG), format!("{}/issues", update::REPO));
+                ui.hyperlink_to(icon_label(icon::BUG, "Report a problem"), format!("{}/issues", update::REPO));
             });
             ui.add_space(8.0);
             self.updater.status(ui, p);
@@ -684,11 +702,8 @@ impl App {
 
             theme::card(ui, p, |ui| {
                 ui.set_width(ui.available_width());
-                theme::section_title(ui, p, icon::TERMINAL_WINDOW, "Command line");
-                ui.label(
-                    RichText::new("The installation also brings the swiftdm command, for scripts and the keyboard:")
-                        .color(p.weak),
-                );
+                theme::section_title(ui, p, icon::TERMINAL_WINDOW, tr("Command line"));
+                theme::paragraph(ui, trl("The installation also brings the swiftdm command, for scripts and the keyboard:"), 14.5, p.weak);
                 ui.add_space(4.0);
                 for line in [
                     "swiftdm https://youtu.be/…              # best video",
@@ -703,13 +718,13 @@ impl App {
             ui.add_space(12.0);
             theme::card(ui, p, |ui| {
                 ui.set_width(ui.available_width());
-                theme::section_title(ui, p, icon::HEART, "Made with");
+                theme::section_title(ui, p, icon::HEART, tr("Made with"));
                 for (name, what, url) in [
-                    ("yt-dlp", "reads the video sites (Unlicense)", "https://github.com/yt-dlp/yt-dlp"),
-                    ("FFmpeg", "joins and converts video and sound (GPL, downloaded separately)", "https://ffmpeg.org"),
-                    ("Deno", "runs YouTube's JavaScript (MIT)", "https://deno.com"),
-                    ("egui", "the interface (MIT / Apache 2.0)", "https://github.com/emilk/egui"),
-                    ("Noto Sans Arabic", "Arabic titles (SIL Open Font License)", "https://fonts.google.com/noto"),
+                    ("yt-dlp", tr("reads the video sites (Unlicense)"), "https://github.com/yt-dlp/yt-dlp"),
+                    ("FFmpeg", tr("joins and converts video and sound (GPL, downloaded separately)"), "https://ffmpeg.org"),
+                    ("Deno", tr("runs YouTube's JavaScript (MIT)"), "https://deno.com"),
+                    ("egui", tr("the interface (MIT / Apache 2.0)"), "https://github.com/emilk/egui"),
+                    ("Noto Sans Arabic", tr("Arabic titles (SIL Open Font License)"), "https://fonts.google.com/noto"),
                 ] {
                     ui.horizontal(|ui| {
                         ui.hyperlink_to(name, url);
@@ -718,11 +733,7 @@ impl App {
                 }
             });
             ui.add_space(12.0);
-            ui.label(
-                RichText::new("Download only what you have the right to. Respect the terms of the sites you use.")
-                    .color(p.weak)
-                    .size(12.5),
-            );
+            theme::paragraph(ui, trl("Download only what you have the right to. Respect the terms of the sites you use."), 12.5, p.weak);
         });
     }
 
@@ -766,10 +777,10 @@ impl App {
                                     }
                                     ui.horizontal(|ui| match &t.target {
                                         ToastTarget::Item(_) => {
-                                            if ui.button("Open").clicked() {
+                                            if ui.button(tr("Open")).clicked() {
                                                 act = Some((i, true));
                                             }
-                                            if ui.button("Show in folder").clicked() {
+                                            if ui.button(tr("Show in folder")).clicked() {
                                                 act = Some((i, false));
                                             }
                                         }
@@ -777,7 +788,7 @@ impl App {
                                             if theme::primary_button(
                                                 ui,
                                                 p,
-                                                &format!("  {}  Download  ", icon::DOWNLOAD_SIMPLE),
+                                                &format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Download")),
                                                 true,
                                             )
                                             .clicked()
@@ -827,16 +838,16 @@ impl App {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::TRASH).size(24.0).color(p.danger));
-                ui.label(theme::semibold("Delete this file?", 17.0));
+                ui.label(theme::semibold(tr("Delete this file?"), 17.0));
             });
             ui.add_space(6.0);
             ui.add(egui::Label::new(text::rich(item.display_name())).wrap());
-            ui.label(RichText::new("The file is deleted from the disk, not moved to the trash.").color(p.weak));
+            ui.label(RichText::new(tr("The file is deleted from the disk, not moved to the trash.")).color(p.weak));
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(theme::semibold("Delete", 14.5).color(Color32::WHITE))
+                        egui::Button::new(theme::semibold(tr("Delete"), 14.5).color(Color32::WHITE))
                             .fill(p.danger)
                             .min_size(Vec2::new(0.0, 36.0)),
                     )
@@ -845,7 +856,7 @@ impl App {
                     self.manager.remove(id, true);
                     self.confirm_delete = None;
                 }
-                if theme::secondary_button(ui, "Cancel").clicked() {
+                if theme::secondary_button(ui, tr("Cancel")).clicked() {
                     self.confirm_delete = None;
                 }
             });
@@ -923,6 +934,11 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // The screenshot language is not the user's.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SWIFTDM_LANG").is_some() {
+            return;
+        }
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
 
@@ -991,31 +1007,31 @@ fn empty_state(ui: &mut Ui, p: &Palette, nothing_yet: bool, search: &str) {
     ui.vertical_centered(|ui| {
         if !search.trim().is_empty() {
             ui.label(RichText::new(icon::MAGNIFYING_GLASS).size(40.0).color(p.weak));
-            ui.label(RichText::new("Nothing matches the search.").color(p.weak).size(15.0));
+            ui.label(RichText::new(tr("Nothing matches the search.")).color(p.weak).size(15.0));
             return;
         }
         if !nothing_yet {
             ui.label(RichText::new(icon::TRAY).size(40.0).color(p.weak));
-            ui.label(RichText::new("Nothing here.").color(p.weak).size(15.0));
+            ui.label(RichText::new(tr("Nothing here.")).color(p.weak).size(15.0));
             return;
         }
         ui.label(RichText::new(icon::DOWNLOAD_SIMPLE).size(54.0).color(p.accent));
         ui.add_space(6.0);
-        ui.label(theme::semibold("Paste a link to start", 20.0));
-        ui.label(RichText::new("Or copy one anywhere — SwiftDM offers to download it.").color(p.weak));
+        ui.label(theme::semibold(tr("Paste a link to start"), 20.0));
+        ui.label(RichText::new(tr("Or copy one anywhere — SwiftDM offers to download it.")).color(p.weak));
         ui.add_space(16.0);
         ui.horizontal_wrapped(|ui| {
             let sites = [
                 "YouTube",
                 "TikTok",
                 "Instagram",
-                "X / Twitter",
+                "X",
                 "Facebook",
                 "SoundCloud",
                 "Vimeo",
                 "Reddit",
                 "Twitch",
-                "Any file link",
+                tr("Any file link"),
             ];
             let total: f32 = sites.len() as f32 * 96.0;
             ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));

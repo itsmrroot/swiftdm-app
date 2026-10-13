@@ -7,7 +7,7 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::text;
+use crate::{i18n, text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
@@ -31,10 +31,10 @@ impl ThemeChoice {
 
     pub fn name(self) -> &'static str {
         match self {
-            ThemeChoice::System => "Like the system",
-            ThemeChoice::Light => "Light",
-            ThemeChoice::Dark => "Dark",
-            ThemeChoice::Night => "Night",
+            ThemeChoice::System => i18n::tr("Like the system"),
+            ThemeChoice::Light => i18n::tr("Light"),
+            ThemeChoice::Dark => i18n::tr("Dark"),
+            ThemeChoice::Night => i18n::tr("Night"),
         }
     }
 }
@@ -66,12 +66,12 @@ impl Accent {
 
     pub fn name(self) -> &'static str {
         match self {
-            Accent::Indigo => "Indigo",
-            Accent::Blue => "Blue",
-            Accent::Violet => "Violet",
-            Accent::Emerald => "Emerald",
-            Accent::Orange => "Orange",
-            Accent::Rose => "Rose",
+            Accent::Indigo => i18n::tr("Indigo"),
+            Accent::Blue => i18n::tr("Blue"),
+            Accent::Violet => i18n::tr("Violet"),
+            Accent::Emerald => i18n::tr("Emerald"),
+            Accent::Orange => i18n::tr("Orange"),
+            Accent::Rose => i18n::tr("Rose"),
         }
     }
 }
@@ -179,8 +179,11 @@ fn system_cjk_font() -> Option<FontData> {
 }
 
 /// System UI font (Segoe UI on Windows, SF on macOS), Phosphor icons, the
-/// bundled Arabic font and, with `cjk`, the system's CJK font.
-pub fn install_fonts(ctx: &egui::Context, cjk: bool) {
+/// bundled Arabic font and, with `cjk`, the system's CJK font. While the
+/// interface is Arabic, the Arabic font comes first so that spaces and digits
+/// in Arabic sentences use it too (see `i18n::visual`); otherwise it is a
+/// fallback for Arabic titles.
+pub fn install_fonts(ctx: &egui::Context, lang: i18n::Lang, cjk: bool) {
     let mut fonts = FontDefinitions::default();
     let candidates: &[(&str, &str)] = if cfg!(windows) {
         &[("system", r"C:\Windows\Fonts\segoeui.ttf"), ("system-semibold", r"C:\Windows\Fonts\seguisb.ttf")]
@@ -189,7 +192,8 @@ pub fn install_fonts(ctx: &egui::Context, cjk: bool) {
     } else {
         &[]
     };
-    fonts.font_data.insert("arabic".into(), Arc::new(FontData::from_static(text::ARABIC_FONT)));
+    fonts.font_data.insert("arabic".into(), Arc::new(FontData::from_static(i18n::ARABIC_FONT)));
+    fonts.font_data.insert("arabic-semibold".into(), Arc::new(FontData::from_static(i18n::ARABIC_FONT_SEMIBOLD)));
     let mut loaded = Vec::new();
     for (name, path) in candidates {
         if let Ok(bytes) = std::fs::read(path) {
@@ -209,11 +213,18 @@ pub fn install_fonts(ctx: &egui::Context, cjk: bool) {
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     semibold.insert(semibold.len().min(1), "phosphor".into());
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
-    proportional.push("arabic".into());
-    semibold.push("arabic".into());
-    // Right-to-left titles: the Arabic font first (see `text`).
+    if lang == i18n::Lang::Ar {
+        proportional.insert(0, "arabic".into());
+        semibold.insert(0, "arabic-semibold".into());
+    } else {
+        proportional.push("arabic".into());
+        semibold.push("arabic-semibold".into());
+    }
+    // Arabic titles in any interface language: the Arabic font first.
     let mut rtl = vec!["arabic".to_string()];
     rtl.extend(proportional.iter().filter(|f| *f != "arabic").cloned());
+    let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
+    monospace.push("arabic".into());
     if cjk && let Some(data) = system_cjk_font() {
         fonts.font_data.insert("cjk".into(), Arc::new(data));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
@@ -412,9 +423,48 @@ pub fn notice(ui: &mut Ui, p: &Palette, color: Color32, icon: &str, text: &str) 
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon).size(18.0).color(color));
-                ui.add(egui::Label::new(RichText::new(text).size(14.0).color(p.text)).wrap());
+                paragraph(ui, text, 14.0, p.text);
             });
         });
+}
+
+/// Text wrapped to the available width. `text` is in logical order
+/// (`i18n::trl`, `i18n::engine`); right-to-left text is broken into lines
+/// here, because egui would put the lines of reordered text in the wrong
+/// order. The lines line up with the rest of the (left-to-right) layout.
+pub fn paragraph(ui: &mut Ui, text: &str, size: f32, color: Color32) {
+    if !i18n::needs_reordering(text) {
+        ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).wrap());
+        return;
+    }
+    let family = if i18n::is_rtl() { FontFamily::Proportional } else { FontFamily::Name(text::RTL.into()) };
+    let width = ui.available_width();
+    let font = FontId::new(size, family.clone());
+    let measure = |ui: &Ui, s: &str| {
+        let shown = i18n::visual(s).into_owned();
+        ui.ctx().fonts_mut(|f| f.layout_no_wrap(shown, font.clone(), color).size().x)
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if !line.is_empty() && measure(ui, &candidate) > width {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            } else {
+                line = candidate;
+            }
+        }
+        lines.push(line);
+    }
+    let centered = ui.layout().is_vertical() && ui.layout().horizontal_align() == egui::Align::Center;
+    let align = if centered { egui::Align::Center } else { egui::Align::Min };
+    ui.with_layout(egui::Layout::top_down(align), |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        for line in lines {
+            ui.label(RichText::new(i18n::visual(&line)).size(size).color(color).family(family.clone()));
+        }
+    });
 }
 
 /// A thin progress bar in `color`.

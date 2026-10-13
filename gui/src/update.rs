@@ -25,6 +25,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use swiftdm::util::format_size;
 
+use crate::i18n::{self, icon_label, tr, trf, trl, trlf};
 use crate::jobs::{Job, Progress};
 use crate::theme::{self, Palette};
 
@@ -369,6 +370,7 @@ pub struct Updater {
     /// Checked: this is the newest version.
     latest: bool,
     download: Option<Job<PathBuf>>,
+    /// In logical order (see `theme::paragraph`).
     error: Option<String>,
     dialog: bool,
 }
@@ -399,7 +401,12 @@ impl Updater {
                     self.dialog |= manual;
                 }
                 Ok(None) => self.latest = true,
-                Err(e) if manual => self.error = Some(format!("Could not check for updates: {e:#}")),
+                Err(e) if manual => {
+                    self.error = Some(trlf(
+                        "Could not check for updates: {error}",
+                        &[("error", &i18n::engine(&format!("{e:#}")))],
+                    ))
+                }
                 Err(e) => log::info!("update check failed: {e:#}"),
             }
         }
@@ -428,7 +435,7 @@ impl Updater {
     /// The button that announces an update, for the top bar or the sidebar.
     pub fn button(&mut self, ui: &mut Ui, p: &Palette) {
         let Some(version) = self.available() else { return };
-        let label = format!("{}  Update to {version}", icon::ARROW_CIRCLE_UP);
+        let label = format!("{}  {}", icon::ARROW_CIRCLE_UP, trf("Update to {version}", &[("version", &version)]));
         if theme::primary_button(ui, p, &label, true).clicked() {
             self.dialog = true;
         }
@@ -439,22 +446,22 @@ impl Updater {
         ui.horizontal_wrapped(|ui| {
             let busy = self.checking.is_some();
             if ui
-                .add_enabled(!busy, egui::Button::new(format!("{}  Check for updates", icon::ARROWS_CLOCKWISE)))
+                .add_enabled(!busy, egui::Button::new(icon_label(icon::ARROWS_CLOCKWISE, "Check for updates")))
                 .clicked()
             {
                 self.check(ui.ctx(), true);
             }
             if busy {
                 ui.spinner();
-                ui.label(RichText::new("Checking for updates…").color(p.weak));
+                ui.label(RichText::new(tr("Checking for updates…")).color(p.weak));
             } else if let Some(version) = self.available() {
-                let text = format!("Version {version} is available.");
+                let text = trf("Version {version} is available.", &[("version", &version)]);
                 if ui.link(RichText::new(text).color(p.accent)).clicked() {
                     self.dialog = true;
                 }
             } else if self.latest {
                 ui.label(
-                    RichText::new(format!("{}  You have the latest version.", icon::CHECK_CIRCLE)).color(p.success),
+                    RichText::new(icon_label(icon::CHECK_CIRCLE, "You have the latest version.")).color(p.success),
                 );
             } else if let Some(e) = &self.error
                 && !self.dialog
@@ -477,11 +484,19 @@ impl Updater {
             ui.set_width(460.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::ARROW_CIRCLE_UP).size(26.0).color(p.accent));
-                ui.label(theme::semibold("Update available", 18.0).color(p.text));
+                ui.label(theme::semibold(tr("Update available"), 18.0).color(p.text));
             });
             ui.add_space(8.0);
-            ui.label(format!("Version {} is available. You have version {}.", release.version, current()));
-            ui.hyperlink_to(format!("{}  What's new", icon::LIST_BULLETS), &release.page);
+            theme::paragraph(
+                ui,
+                &trlf(
+                    "Version {version} is available. You have version {current}.",
+                    &[("version", &release.version), ("current", &current())],
+                ),
+                14.5,
+                p.text,
+            );
+            ui.hyperlink_to(icon_label(icon::LIST_BULLETS, "What's new"), &release.page);
             ui.add_space(8.0);
 
             if let Some(job) = &self.download {
@@ -492,16 +507,15 @@ impl Updater {
                 };
                 ui.add(bar);
                 ui.label(
-                    RichText::new(format!(
-                        "Downloading… {} of {}",
-                        format_size(state.done()),
-                        format_size(state.total().unwrap_or(0))
+                    RichText::new(trf(
+                        "Downloading… {done} of {total}",
+                        &[("done", &format_size(state.done())), ("total", &format_size(state.total().unwrap_or(0)))],
                     ))
                     .color(p.weak),
                 );
                 ui.add_space(8.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::secondary_button(ui, "Cancel").clicked() {
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
                         job.stop();
                     }
                 });
@@ -509,31 +523,31 @@ impl Updater {
             }
 
             if !release.installable() {
-                weak(ui, p, "This copy of the app was not installed with an installer, so it is updated by downloading the new version.");
+                weak(ui, p, trl("This copy of the app was not installed with an installer, so it is updated by downloading the new version."));
             } else {
-                weak(ui, p, "The app will close, install the update and start again.");
+                weak(ui, p, trl("The app will close, install the update and start again."));
             }
             if busy {
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new("Running downloads are paused and continue after the update.").color(p.warning)).wrap());
+                theme::paragraph(ui, trl("Running downloads are paused and continue after the update."), 14.5, p.warning);
             }
             if let Some(e) = &self.error {
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new(e).color(p.danger)).wrap());
+                theme::paragraph(ui, e, 14.5, p.danger);
             }
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if release.installable() {
-                    if theme::primary_button(ui, p, "  Update now  ", true).clicked() {
+                    if theme::primary_button(ui, p, &format!("  {}  ", tr("Update now")), true).clicked() {
                         self.error = None;
                         let r = release.clone();
                         self.download = Some(Job::spawn(ui.ctx(), move |progress, cancel| download(&r, progress, cancel)));
                     }
-                } else if theme::primary_button(ui, p, "  Open download page  ", true).clicked() {
+                } else if theme::primary_button(ui, p, &format!("  {}  ", tr("Open download page")), true).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(&release.page));
                     self.dialog = false;
                 }
-                if theme::secondary_button(ui, "Later").clicked() {
+                if theme::secondary_button(ui, tr("Later")).clicked() {
                     self.dialog = false;
                 }
             });
@@ -546,7 +560,7 @@ impl Updater {
 }
 
 fn weak(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).color(p.weak)).wrap());
+    theme::paragraph(ui, text, 14.5, p.weak);
 }
 
 #[cfg(test)]
