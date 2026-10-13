@@ -1,0 +1,31 @@
+name: Release page
+
+# Publishes release-page/ (README, screenshots, licence) as the front page of
+# the public repository the downloads live in. The release workflow needs it
+# to have at least one commit.
+on:
+  push:
+    branches: [main]
+    paths: ["release-page/**"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Copy to itsmrroot/SwiftDM-release
+        env:
+          TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TOKEN}@github.com/itsmrroot/SwiftDM-release.git" public
+          cd public
+          git checkout -B main
+          # Everything but the history is replaced by release-page/.
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R ../release-page/. .
+          git add -A
+          if git diff --cached --quiet; then echo "Nothing changed"; exit 0; fi
+          git -c user.name="Bashar Salmo" -c user.email="itsmrroot@users.noreply.github.com" \
+            commit -m "Update the release page from ${GITHUB_SHA::7}"
+          git push origin main
