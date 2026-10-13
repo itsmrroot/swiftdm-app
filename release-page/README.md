@@ -15,6 +15,9 @@ Vimeo and 1800+ more sites, or any direct file. Fast, resumable, and free.**
 [![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](#-windows)
 [![macOS](https://img.shields.io/badge/macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](#-macos)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](#-linux)
+[![Browser](https://img.shields.io/badge/Chrome%20·%20Edge%20·%20Brave%20·%20Firefox-6366f1?style=for-the-badge&logo=googlechrome&logoColor=white)](#-add-to-your-browser)
+
+**English · العربية · Deutsch · Türkçe**
 
 </div>
 
@@ -92,6 +95,40 @@ Titles in Arabic, Chinese, Japanese and Korean show correctly. It updates itself
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+### 🧩 Right inside your browser
+The SwiftDM extension for **Chrome, Edge, Brave, Opera, Vivaldi and Firefox**: right-click any link, video or
+image → *Download with SwiftDM*; a **Download button on every video**; the browser's own downloads go to SwiftDM
+(with your login, so files from cloud drives work too); and a list of the video and audio files each page loads.
+
+</td>
+<td valign="top">
+
+### 🎛️ Formats, subtitles, no sponsors
+Video as **MP4, MKV or WebM**; sound as **MP3, M4A, Opus, FLAC or WAV**. **Subtitles** in your languages,
+**chapters**, sponsor segments cut out with **SponsorBlock**, or only **a part** of a long video (1:30 → 2:45).
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🌙 Schedule and power
+Start downloads at night and pause them in the morning, every day. When everything is done: **sleep, shut down
+or quit**. The computer stays awake while downloading. Notifications when downloads finish.
+
+</td>
+<td valign="top">
+
+### 🗂️ Tidy and in control
+Files sorted into **Video, Music, Documents, Programs** folders; **import links** from a text file; a warning
+when a link was downloaded before; *Start next* to jump the queue; **proxy** support; SHA-256 of any file in one
+click; a **top bar** with the settings you change most, a full **menu bar** on macOS, and a built-in **Help guide**.
+
+</td>
+</tr>
 </table>
 
 ## 📥 Install
@@ -135,6 +172,22 @@ chmod +x swiftdm-linux-x86_64.AppImage && ./swiftdm-linux-x86_64.AppImage
 The command line alone (no window, static, any Linux) is in the `…-linux-musl.tar.gz` files on the
 [release page](https://github.com/itsmrroot/SwiftDM-release/releases/latest).
 
+## 🧩 Add to your browser
+
+<div align="center">
+<img src="assets/browser.png" alt="SwiftDM Settings, Browser tab: the steps to add the extension to Chrome, Edge, Brave, Opera, Vivaldi or Chromium" width="100%">
+</div>
+
+1. Install SwiftDM (above) and **open it once** — it connects itself to every browser on the computer.
+2. In SwiftDM: **Settings → Browser** (or the *Add to browser* button at the top) shows the steps for your browser:
+   click **Show the extension**, open the browser's **extensions page**, turn on **Developer mode** and choose
+   **Load unpacked** with that folder.
+3. Pin the SwiftDM button in the toolbar. Right-click links and videos, or use the button on videos.
+
+The extension is also attached to each release (`swiftdm-browser-extension-chrome.zip`,
+`swiftdm-browser-extension-firefox.zip`). Store versions (Chrome Web Store, Edge Add-ons, Firefox Add-ons) are on
+the way.
+
 ## 🚀 Quick start
 
 1. Open SwiftDM. The first time, click **Install helpers** (about 120 MB, once) — needed for video sites only.
@@ -151,6 +204,9 @@ with the AppImage, **About → Command line** in the app shows where it is.
 ```bash
 swiftdm https://youtu.be/…                  # best video
 swiftdm -a -k 320 https://soundcloud.com/…  # MP3, 320 kbps
+swiftdm -a -f flac https://…                # FLAC
+swiftdm --subs en,ar --sponsorblock https://youtu.be/…
+swiftdm --section 1:30-2:45 https://…       # only a part
 swiftdm -q 720 -o ~/Videos https://…        # 720p, into a folder
 swiftdm -c 16 https://example.com/big.iso   # 16 connections
 swiftdm --limit 2M https://…                # at most 2 MB/s
@@ -168,6 +224,9 @@ Sites change often. **Settings → Helpers → Update** next to yt-dlp — Swift
 
 **MP3 doesn't work / only 360p is offered.**
 FFmpeg is missing: **Settings → Helpers → Install**.
+
+**The browser extension says SwiftDM is not reachable.**
+Open SwiftDM once after installing or moving it — it connects itself to your browsers — then reload the page.
 
 **Is it safe?**
 SwiftDM downloads only what you ask for, sends nothing about you anywhere, and installs its helpers from their

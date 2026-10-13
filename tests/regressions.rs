@@ -222,7 +222,7 @@ fn empty_answers_are_not_hammered() {
     let s2 = stop.clone();
     let url = server.url.clone();
     let h = std::thread::spawn(move || {
-        let job = http::Job { url: &url, path: &path, connections: 2, resume: None };
+        let job = http::Job { url: &url, path: &path, connections: 2, resume: None, net: Default::default() };
         let _ = http::download(job, &s2, &Limiter::default(), &Nop);
     });
     std::thread::sleep(Duration::from_secs(5));
@@ -242,7 +242,7 @@ fn a_stalled_server_does_not_block_stopping() {
     let s2 = stop.clone();
     let url = server.url.clone();
     let h = std::thread::spawn(move || {
-        let job = http::Job { url: &url, path: &path, connections: 2, resume: None };
+        let job = http::Job { url: &url, path: &path, connections: 2, resume: None, net: Default::default() };
         let _ = http::download(job, &s2, &Limiter::default(), &Nop);
     });
     std::thread::sleep(Duration::from_secs(1));

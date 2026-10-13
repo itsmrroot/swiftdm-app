@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="">
+    <strong>SwiftDM</strong>
+    <span id="status" class="status"><i></i><span></span></span>
+  </header>
+
+  <section id="setup" hidden>
+    <p data-i18n="setupHelp"></p>
+    <a class="button" href="https://github.com/itsmrroot/SwiftDM-release/releases/latest" target="_blank" data-i18n="getApp"></a>
+  </section>
+
+  <section id="page">
+    <h2 data-i18n="thisPage"></h2>
+    <div id="pageTitle" class="title"></div>
+    <div class="row">
+      <button id="video" class="primary" data-i18n="video"></button>
+      <button id="audio" data-i18n="sound"></button>
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i18n="found"></h2>
+    <ul id="media"></ul>
+    <p id="empty" class="weak" data-i18n="nothingFound" hidden></p>
+  </section>
+
+  <details>
+    <summary data-i18n="settings"></summary>
+    <label><input type="checkbox" id="catchDownloads"> <span data-i18n="catchDownloads"></span></label>
+    <label class="indent"><span data-i18n="minSize"></span> <input type="number" id="minSizeMB" min="0" max="10000" step="1"></label>
+    <label><input type="checkbox" id="videoButton"> <span data-i18n="videoButton"></span></label>
+  </details>
+
+  <footer>
+    <button id="open" class="link" data-i18n="openApp"></button>
+    <span class="weak">Powered by Bashar Salmo</span>
+  </footer>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,77 @@
+{
+  "name": {
+    "message": "SwiftDM — video ve dosya indir"
+  },
+  "description": {
+    "message": "Videoları, müzikleri ve dosyaları tarayıcıdan SwiftDM'e gönderin: birden çok bağlantıyla hızlı indirme, 1800'den fazla video sitesi."
+  },
+  "menuLink": {
+    "message": "Bağlantıyı SwiftDM ile indir"
+  },
+  "menuMedia": {
+    "message": "Bu videoyu SwiftDM ile indir"
+  },
+  "menuImage": {
+    "message": "Resmi SwiftDM ile indir"
+  },
+  "menuPage": {
+    "message": "Bu sayfadaki videoyu indir"
+  },
+  "menuPageAudio": {
+    "message": "Sesi MP3 olarak indir"
+  },
+  "connected": {
+    "message": "SwiftDM'e bağlı"
+  },
+  "notConnected": {
+    "message": "SwiftDM'e ulaşılamıyor"
+  },
+  "setupHelp": {
+    "message": "SwiftDM'i yükleyin ve bir kez açın — bu tarayıcıya kendisi bağlanır. Sonra bu sayfayı yeniden yükleyin."
+  },
+  "getApp": {
+    "message": "SwiftDM'i edinin"
+  },
+  "thisPage": {
+    "message": "Bu sayfa"
+  },
+  "video": {
+    "message": "Video"
+  },
+  "sound": {
+    "message": "Ses (MP3)"
+  },
+  "found": {
+    "message": "Bu sayfada bulunanlar"
+  },
+  "nothingFound": {
+    "message": "Henüz video veya ses dosyası görülmedi. Videoyu oynatın, sonra bunu yeniden açın."
+  },
+  "download": {
+    "message": "İndir"
+  },
+  "settings": {
+    "message": "Ayarlar"
+  },
+  "catchDownloads": {
+    "message": "Tarayıcının indirmelerini SwiftDM'e gönder"
+  },
+  "minSize": {
+    "message": "Yalnızca şundan büyük dosyalar (MB)"
+  },
+  "videoButton": {
+    "message": "Videolarda indirme düğmesi göster"
+  },
+  "openApp": {
+    "message": "SwiftDM'i aç"
+  },
+  "sent": {
+    "message": "SwiftDM'e gönderildi"
+  },
+  "failed": {
+    "message": "SwiftDM'e ulaşılamadı"
+  },
+  "buttonTitle": {
+    "message": "SwiftDM ile indir"
+  }
+}

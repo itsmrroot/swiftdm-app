@@ -1,0 +1,77 @@
+{
+  "name": {
+    "message": "SwiftDM — نزّل الفيديو والملفات"
+  },
+  "description": {
+    "message": "أرسل الفيديو والموسيقى والملفات من المتصفح إلى SwiftDM: تنزيل سريع عبر عدة اتصالات، وأكثر من 1800 موقع فيديو."
+  },
+  "menuLink": {
+    "message": "تنزيل الرابط بـ SwiftDM"
+  },
+  "menuMedia": {
+    "message": "تنزيل هذا الفيديو بـ SwiftDM"
+  },
+  "menuImage": {
+    "message": "تنزيل الصورة بـ SwiftDM"
+  },
+  "menuPage": {
+    "message": "تنزيل الفيديو في هذه الصفحة"
+  },
+  "menuPageAudio": {
+    "message": "تنزيل الصوت بصيغة MP3"
+  },
+  "connected": {
+    "message": "متصل بـ SwiftDM"
+  },
+  "notConnected": {
+    "message": "تعذّر الوصول إلى SwiftDM"
+  },
+  "setupHelp": {
+    "message": "ثبّت SwiftDM وافتحه مرة واحدة — سيتصل بهذا المتصفح من تلقاء نفسه. ثم أعد تحميل هذه الصفحة."
+  },
+  "getApp": {
+    "message": "احصل على SwiftDM"
+  },
+  "thisPage": {
+    "message": "هذه الصفحة"
+  },
+  "video": {
+    "message": "فيديو"
+  },
+  "sound": {
+    "message": "الصوت (MP3)"
+  },
+  "found": {
+    "message": "موجود في هذه الصفحة"
+  },
+  "nothingFound": {
+    "message": "لم تُرصد ملفات فيديو أو صوت بعد. شغّل الفيديو ثم افتح هذا مرة أخرى."
+  },
+  "download": {
+    "message": "تنزيل"
+  },
+  "settings": {
+    "message": "الإعدادات"
+  },
+  "catchDownloads": {
+    "message": "إرسال تنزيلات المتصفح إلى SwiftDM"
+  },
+  "minSize": {
+    "message": "فقط الملفات الأكبر من (MB)"
+  },
+  "videoButton": {
+    "message": "إظهار زر تنزيل على مقاطع الفيديو"
+  },
+  "openApp": {
+    "message": "فتح SwiftDM"
+  },
+  "sent": {
+    "message": "أُرسل إلى SwiftDM"
+  },
+  "failed": {
+    "message": "تعذّر الوصول إلى SwiftDM"
+  },
+  "buttonTitle": {
+    "message": "التنزيل بـ SwiftDM"
+  }
+}

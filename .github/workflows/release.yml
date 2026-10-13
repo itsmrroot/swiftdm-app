@@ -32,6 +32,37 @@ jobs:
               --title "SwiftDM ${tag#v}" \
               --notes "Downloads for Windows, macOS and Linux — see the [install guide](https://github.com/$PUBLIC#-install)."
 
+  extension:
+    needs: draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The browser extension, for loading "unpacked" and for the stores.
+      # Firefox gets background scripts and its own id (see gui/src/browser.rs).
+      - name: Package the browser extension
+        run: |
+          mkdir upload
+          ext=gui/assets/browser-extension
+          (cd "$ext" && zip -qr "$GITHUB_WORKSPACE/upload/swiftdm-browser-extension-chrome.zip" .)
+          cp -R "$ext" firefox
+          python3 - <<'PY'
+          import json
+          m = json.load(open("firefox/manifest.json"))
+          m.pop("key", None)
+          m["background"] = {"scripts": ["background.js"]}
+          m["browser_specific_settings"] = {"gecko": {"id": "swiftdm@itsmrroot.github.io", "strict_min_version": "128.0"}}
+          json.dump(m, open("firefox/manifest.json", "w"), indent=2, ensure_ascii=False)
+          PY
+          (cd firefox && zip -qr "$GITHUB_WORKSPACE/upload/swiftdm-browser-extension-firefox.zip" .)
+          ls -la upload
+      - name: Upload
+        env:
+          PRIVATE_TOKEN: ${{ github.token }}
+          PUBLIC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          GH_TOKEN="$PUBLIC_TOKEN" gh release upload "$GITHUB_REF_NAME" upload/* -R "$PUBLIC" --clobber
+          GH_TOKEN="$PRIVATE_TOKEN" gh release upload "$GITHUB_REF_NAME" upload/* -R "$GITHUB_REPOSITORY" --clobber
+
   build:
     name: ${{ matrix.target }}
     needs: draft
@@ -137,7 +168,7 @@ jobs:
           GH_TOKEN="$PRIVATE_TOKEN" gh release upload "$GITHUB_REF_NAME" upload/* -R "$GITHUB_REPOSITORY" --clobber
 
   publish:
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-latest
     steps:
       - name: Publish releases

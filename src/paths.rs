@@ -6,6 +6,11 @@ use std::path::PathBuf;
 /// `%APPDATA%\SwiftDM`, `~/Library/Application Support/SwiftDM`,
 /// `~/.local/share/swiftdm`.
 pub fn data_dir() -> PathBuf {
+    // A separate folder for tests and portable use: its own list, helpers
+    // and connection to the browser.
+    if let Some(dir) = std::env::var_os("SWIFTDM_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     let base = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
     if cfg!(any(windows, target_os = "macos")) { base.join("SwiftDM") } else { base.join("swiftdm") }
 }

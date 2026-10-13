@@ -1,6 +1,6 @@
 [package]
 name = "swiftdm-gui"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Desktop app for SwiftDM"
@@ -11,7 +11,9 @@ build = "build.rs"
 [dependencies]
 anyhow = "1.0.104"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "wayland", "x11", "links"] }
+dirs = "6.0.0"
 egui-phosphor = "0.14.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 log = "0.4.34"
@@ -21,7 +23,7 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 sys-locale = "0.3.2"
-swiftdm = { version = "1.1.0", path = ".." }
+swiftdm = { version = "1.2.0", path = ".." }
 unicode-bidi = "0.3.18"
 ureq = "3.4.2"
 
@@ -30,6 +32,15 @@ winresource = "0.1.31"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2.189"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The menu bar.
+muda = { version = "0.19.3", default-features = false }
+winit = { version = "0.30", default-features = false }
+
+[target."cfg(windows)".dependencies]
+# Keeping the computer awake while downloading.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
 
 # Installers, built by `cargo packager --release -p swiftdm-gui` (see
 # .github/workflows/release.yml): Windows setup (NSIS), macOS .app/.dmg,

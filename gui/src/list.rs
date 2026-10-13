@@ -58,13 +58,15 @@ pub enum RowAction {
     Open(u64),
     Reveal(u64),
     CopyLink(u64),
+    StartNext(u64),
+    CopyHash(u64),
     OpenLink(u64),
     Remove(u64),
     Delete(u64),
 }
 
 /// How long ago `secs` was, in logical order.
-fn date(secs: i64) -> String {
+pub fn date(secs: i64) -> String {
     let ago = swiftdm::util::now() - secs;
     match ago {
         i64::MIN..=59 => trl("just now").into(),
@@ -245,6 +247,12 @@ fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
         entry(ui, i18n::icon_label(icon::PLAY_CIRCLE, "Open"), RowAction::Open(id));
         entry(ui, i18n::icon_label(icon::FOLDER_OPEN, "Show in folder"), RowAction::Reveal(id));
         ui.separator();
+    }
+    if matches!(item.status, Status::Queued | Status::Paused) {
+        entry(ui, i18n::icon_label(icon::ARROW_FAT_LINE_UP, "Start next"), RowAction::StartNext(id));
+    }
+    if item.status == Status::Done {
+        entry(ui, i18n::icon_label(icon::FINGERPRINT, "Copy SHA-256"), RowAction::CopyHash(id));
     }
     entry(ui, i18n::icon_label(icon::COPY, "Copy link"), RowAction::CopyLink(id));
     entry(ui, i18n::icon_label(icon::GLOBE, "Open link in browser"), RowAction::OpenLink(id));

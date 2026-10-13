@@ -492,6 +492,10 @@ mod tests {
     const SOURCES: &[&str] = &[
         include_str!("add.rs"),
         include_str!("app.rs"),
+        include_str!("browser.rs"),
+        include_str!("help.rs"),
+        include_str!("menu.rs"),
+        include_str!("power.rs"),
         include_str!("helpers.rs"),
         include_str!("i18n.rs"),
         include_str!("list.rs"),

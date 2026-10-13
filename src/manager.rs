@@ -53,6 +53,10 @@ pub struct Item {
     /// Where a plain download continues.
     #[serde(default)]
     pub resume: Option<Resume>,
+    /// Sent with every request: the browser's cookies and page for a link
+    /// that came from the browser extension.
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
     /// Bytes per second, while running.
     #[serde(skip)]
     pub speed: f64,
@@ -103,11 +107,23 @@ pub struct Settings {
     pub cookies_from: Option<String>,
     /// When a site refuses, try the logins of the usual browsers.
     pub auto_cookies: bool,
+    /// `http://host:port` or `socks5://host:port` for everything.
+    pub proxy: Option<String>,
+    /// Files go into a folder for their kind: Video, Music, Documents, ….
+    pub sort_by_kind: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { max_active: 3, connections: 8, speed_limit: 0, cookies_from: None, auto_cookies: true }
+        Self {
+            max_active: 3,
+            connections: 8,
+            speed_limit: 0,
+            cookies_from: None,
+            auto_cookies: true,
+            proxy: None,
+            sort_by_kind: false,
+        }
     }
 }
 
@@ -274,6 +290,20 @@ impl Manager {
     /// Adds a download; it starts when a place is free. `name` is the file
     /// name or title if already known.
     pub fn add(&self, url: &str, source: Source, name: Option<String>, dir: &Path, thumbnail: Option<String>) -> u64 {
+        self.add_with(url, source, name, dir, thumbnail, Vec::new())
+    }
+
+    /// Like [`Manager::add`], with headers to send (see [`http::ALLOWED_HEADERS`]).
+    pub fn add_with(
+        &self,
+        url: &str,
+        source: Source,
+        name: Option<String>,
+        dir: &Path,
+        thumbnail: Option<String>,
+        headers: Vec<(String, String)>,
+    ) -> u64 {
+        let headers = http::Net { proxy: None, headers }.sanitized().headers;
         let id = {
             let mut s = self.inner.lock();
             let id = s.next_id;
@@ -295,6 +325,7 @@ impl Manager {
                 finished: None,
                 thumbnail,
                 resume: None,
+                headers,
                 speed: 0.0,
                 eta: None,
                 stage: None,
@@ -396,6 +427,23 @@ impl Manager {
                 }
             });
         }
+        self.inner.notify();
+    }
+
+    /// Moves a waiting download to the front of the queue.
+    pub fn start_next(&self, id: u64) {
+        {
+            let mut s = self.inner.lock();
+            let first = s.items.iter().filter(|i| i.status == Status::Queued).map(|i| i.added).min().unwrap_or(0);
+            if let Some(item) = s.items.iter_mut().find(|i| i.id == id) {
+                item.added = item.added.min(first - 1);
+                if item.status == Status::Paused {
+                    item.status = Status::Queued;
+                }
+            }
+            s.dirty = true;
+        }
+        self.schedule();
         self.inner.notify();
     }
 
@@ -528,6 +576,17 @@ impl Manager {
         if self.inner.lock().closing { Status::Queued } else { Status::Paused }
     }
 
+    /// `dir`, or its folder for `kind` when files are sorted by kind.
+    fn folder_for(&self, dir: &Path, kind: FileKind) -> PathBuf {
+        if !self.settings().sort_by_kind {
+            return dir.to_path_buf();
+        }
+        match kind_folder(kind) {
+            Some(sub) => dir.join(sub),
+            None => dir.to_path_buf(),
+        }
+    }
+
     fn fail(&self, id: u64, message: String) {
         self.inner.update(id, |i| {
             // Paused or started again meanwhile: the user's choice stands.
@@ -578,8 +637,9 @@ impl Manager {
                         Err(e) => return self.fail(id, capitalize(&format!("{e:#}"))),
                     }
                 };
-                if let Err(e) = std::fs::create_dir_all(&item.dir) {
-                    return self.fail(id, format!("Cannot create {}: {e}", item.dir.display()));
+                let dir = self.folder_for(&item.dir, FileKind::of(&name));
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    return self.fail(id, format!("Cannot create {}: {e}", dir.display()));
                 }
                 // Chosen under the lock, so that two downloads of the same
                 // name never pick the same file.
@@ -591,7 +651,7 @@ impl Manager {
                         .filter(|i| i.id != id && i.status != Status::Done)
                         .filter_map(|i| i.path.as_deref())
                         .collect();
-                    unique_path_except(&item.dir, &name, &others)
+                    unique_path_except(&dir, &name, &others)
                 };
                 let Some(i) = s.items.iter_mut().find(|i| i.id == id) else { return };
                 i.name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -604,9 +664,16 @@ impl Manager {
         if stop.load(Ordering::Relaxed) {
             return self.stopped(id, item.resume.clone());
         }
-        let connections = self.settings().connections;
+        let settings = self.settings();
         let report = Progress::new(self.inner.clone(), id);
-        let job = http::Job { url: &item.url, path: &path, connections, resume: item.resume.clone() };
+        let net = http::Net { proxy: settings.proxy.clone(), headers: item.headers.clone() };
+        let job = http::Job {
+            url: &item.url,
+            path: &path,
+            connections: settings.connections,
+            resume: item.resume.clone(),
+            net,
+        };
         match http::download(job, stop, &self.inner.limiter, &report) {
             Ok(Outcome::Finished(p)) => self.finish(id, p),
             Ok(Outcome::Stopped(resume)) => self.stopped(id, resume),
@@ -648,11 +715,16 @@ impl Manager {
         fallbacks.reverse();
         let report = Progress::new(self.inner.clone(), id);
         let mut site_error: Option<media::MediaError> = None;
+        let kind = if options.mode == Mode::Audio { FileKind::Audio } else { FileKind::Video };
+        let dir = self.folder_for(&item.dir, kind);
+        let referer = item.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("referer")).map(|(_, v)| v.as_str());
         loop {
             let job = media::Job {
                 url: &item.url,
-                dir: &item.dir,
+                dir: &dir,
                 options: &options,
+                proxy: settings.proxy.as_deref(),
+                referer,
                 // Each yt-dlp limits itself: share the limit between the
                 // downloads that may run at once.
                 rate_limit: settings.speed_limit / settings.max_active.max(1) as u64,
@@ -701,6 +773,19 @@ impl Manager {
             }
         }
     }
+}
+
+/// The folder each kind of file goes into when sorting by kind.
+pub fn kind_folder(kind: FileKind) -> Option<&'static str> {
+    Some(match kind {
+        FileKind::Video => "Video",
+        FileKind::Audio => "Music",
+        FileKind::Image => "Images",
+        FileKind::Archive => "Archives",
+        FileKind::Program => "Programs",
+        FileKind::Document => "Documents",
+        FileKind::Other => return None,
+    })
 }
 
 fn capitalize(s: &str) -> String {

@@ -12,10 +12,14 @@ use swiftdm::tools::Tool;
 use swiftdm::util::{FileKind, is_link};
 
 use crate::add::{self, AddDialog};
+use crate::help::HelpAction;
 use crate::helpers::Helpers;
 use crate::i18n::{self, icon_label, tr, trl};
-use crate::instance::Inbox;
+use crate::instance::{Inbox, Incoming};
+use crate::jobs::Job;
 use crate::list::{self, RowAction};
+use crate::menu::{Command, MenuBar};
+use crate::power::{AfterDone, Due, Power};
 use crate::settings::{self, Settings};
 use crate::text;
 use crate::theme::{self, Accent, Palette, ThemeChoice};
@@ -30,6 +34,7 @@ const SETTINGS_KEY: &str = "settings";
 enum Page {
     Downloads,
     Settings,
+    Help,
     About,
 }
 
@@ -124,6 +129,14 @@ pub struct App {
     applied_language: Option<i18n::Language>,
     /// Whether copied links were watched in the last frame.
     clip_watching: bool,
+    menu: MenuBar,
+    power: Power,
+    settings_page: settings::Page,
+    /// When the browser extension last talked to SwiftDM.
+    browser_seen: Option<i64>,
+    browser_checked: Instant,
+    /// SHA-256 of finished files being computed (to copy).
+    hashing: Vec<(String, Job<String>)>,
 }
 
 impl App {
@@ -197,15 +210,40 @@ impl App {
             session_start: swiftdm::util::now(),
             applied_language: None,
             clip_watching: false,
+            menu: MenuBar::default(),
+            power: Power::default(),
+            settings_page: settings::Page::default(),
+            browser_seen: None,
+            browser_checked: Instant::now() - Duration::from_secs(60),
+            hashing: Vec::new(),
         };
         // Development aid: open a page for screenshots.
         #[cfg(debug_assertions)]
         match std::env::var("SWIFTDM_PAGE").as_deref() {
             Ok("settings") => app.page = Page::Settings,
             Ok("about") => app.page = Page::About,
+            Ok("help") => app.page = Page::Help,
+            Ok("browser") => {
+                app.page = Page::Settings;
+                app.settings_page.tab = settings::Tab::Browser;
+            }
             _ => {}
         }
         inbox.attach(ctx);
+        // Connects the browser extension (and keeps it connected after an
+        // update or a move of the app).
+        // Not for a separate test or portable copy (its own data folder):
+        // the browsers would then talk to it instead of the installed app.
+        let separate = std::env::var_os("SWIFTDM_DATA_DIR").is_some();
+        std::thread::spawn(move || {
+            if separate {
+                return;
+            }
+            if let Err(e) = crate::browser::register() {
+                log::warn!("browser helper not registered: {e:#}");
+            }
+            crate::browser::refresh_extension_files();
+        });
         app.inbox = Some(inbox);
         if !links.is_empty() {
             app.add_links(ctx, &links.join(" "));
@@ -265,10 +303,30 @@ impl App {
         }
         // Their "download the copied link?" offers are answered.
         self.toasts.retain(|t| !matches!(&t.target, ToastTarget::Link(u) if links.contains(&u.as_str())));
-        // Several links at once start without questions.
-        let quick = !self.settings.ask_first || links.len() > 1;
-        for l in links {
-            self.adds.push(AddDialog::new(ctx, l, &self.settings, quick));
+        let requests = links.into_iter().map(Incoming::link).collect();
+        self.add_requests(ctx, requests);
+    }
+
+    /// Opens the dialog for links with what came along (from the browser).
+    fn add_requests(&mut self, ctx: &egui::Context, requests: Vec<Incoming>) {
+        let several = requests.len() > 1;
+        let items = self.manager.items();
+        for r in requests {
+            // Several links at once start without questions; the browser
+            // may ask for either.
+            let quick = !r.ask.unwrap_or(self.settings.ask_first && !several);
+            let before = items
+                .iter()
+                .filter(|i| i.url == r.url && i.status == Status::Done)
+                .max_by_key(|i| i.finished)
+                .map(|i| (i.display_name().to_string(), i.finished.unwrap_or(i.added)));
+            let mut dialog = AddDialog::new(ctx, r, &self.settings, quick);
+            if before.is_some() {
+                // Downloaded before: ask, whatever the setting.
+                dialog.quick = false;
+                dialog.before = before;
+            }
+            self.adds.push(dialog);
         }
         self.url.clear();
         self.page = Page::Downloads;
@@ -277,7 +335,7 @@ impl App {
     fn start(&mut self, downloads: Vec<add::NewDownload>) {
         let n = downloads.len();
         for d in downloads {
-            self.manager.add(&d.url, d.source, d.name, &d.dir, d.thumbnail);
+            self.manager.add_with(&d.url, d.source, d.name, &d.dir, d.thumbnail, d.headers);
         }
         if n > 0 && matches!(self.filter, Filter::Done | Filter::Failed | Filter::Paused) {
             self.filter = Filter::All;
@@ -357,6 +415,16 @@ impl App {
             }
         }
         for (id, status, name, error) in news {
+            // In the background: the system tells too.
+            if self.settings.notify && !ctx.input(|i| i.focused) {
+                let title = if status == Status::Done { trl("Download complete") } else { trl("Download failed") };
+                crate::power::notify(title, &name);
+                if cfg!(windows) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                        egui::UserAttentionType::Informational,
+                    ));
+                }
+            }
             match status {
                 Status::Done => {
                     self.toast(icon::CHECK_CIRCLE, p.success, tr("Download complete"), &name, ToastTarget::Item(id))
@@ -468,25 +536,259 @@ impl App {
                     ctx.open_url(egui::OpenUrl::new_tab(&i.url));
                 }
             }
+            RowAction::StartNext(id) => self.manager.start_next(id),
+            RowAction::CopyHash(id) => {
+                if let Some(path) = item(id).and_then(|i| i.path) {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.hashing.push((name, Job::spawn(ctx, move |progress, stop| sha256(&path, progress, stop))));
+                }
+            }
             RowAction::Remove(id) => self.manager.remove(id, false),
             RowAction::Delete(id) => self.confirm_delete = Some(id),
         }
+    }
+
+    /// Runs a command of the menu bar, a shortcut or a button.
+    fn run(&mut self, ctx: &egui::Context, c: Command) {
+        match c {
+            Command::NewDownload => {
+                self.page = Page::Downloads;
+                self.focus_url = true;
+            }
+            Command::PasteLink => {
+                if let Some(t) = self.clipboard.as_mut().and_then(|c| c.get_text().ok()) {
+                    self.clip_last = t.trim().to_string();
+                    self.add_links(ctx, &t);
+                }
+            }
+            Command::ImportLinks => self.import_links(ctx),
+            Command::OpenFolder => {
+                let _ = std::fs::create_dir_all(&self.settings.download_dir);
+                let _ = swiftdm::util::open_path(&self.settings.download_dir);
+            }
+            Command::Show(n) => {
+                self.page = Page::Downloads;
+                self.filter = [Filter::All, Filter::Active, Filter::Done, Filter::Paused, Filter::Failed][n.min(4)];
+            }
+            Command::Settings => self.page = Page::Settings,
+            Command::Help => self.page = Page::Help,
+            Command::About => self.page = Page::About,
+            Command::AddToBrowser => {
+                self.page = Page::Settings;
+                self.settings_page.tab = settings::Tab::Browser;
+            }
+            Command::PauseAll => self.manager.pause_all(),
+            Command::ResumeAll => self.manager.resume_all(),
+            Command::ClearCompleted => self.manager.clear_finished(),
+            Command::AfterDone(a) => self.power.after_done = a,
+            Command::CheckUpdates => {
+                self.updater.check(ctx, true);
+                self.page = Page::About;
+            }
+            Command::ZoomIn => self.settings.ui_scale = ((self.settings.ui_scale * 10.0).round() / 10.0 + 0.1).min(1.5),
+            Command::ZoomOut => {
+                self.settings.ui_scale = ((self.settings.ui_scale * 10.0).round() / 10.0 - 0.1).max(0.8)
+            }
+            Command::ZoomReset => self.settings.ui_scale = 1.0,
+            Command::Theme(t) => self.settings.theme = t,
+            Command::Open(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Command::Undo | Command::Redo | Command::Cut | Command::Copy | Command::Paste | Command::SelectAll => {
+                crate::menu::edit(ctx, c)
+            }
+        }
+    }
+
+    fn on_due(&mut self, ctx: &egui::Context, due: Due) {
+        match due {
+            Due::None => {}
+            Due::StartAll => self.manager.resume_all(),
+            Due::PauseAll => self.manager.pause_all(),
+            Due::Act(AfterDone::Quit) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Due::Act(_) => {}
+        }
+    }
+
+    /// Links from a text file (one or more per line).
+    fn import_links(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr("Text files"), &["txt", "csv", "list", "md", "html", "htm"])
+            .add_filter(tr("All files"), &["*"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                // Links inside quotes or brackets (HTML, CSV) count too.
+                let cleaned: String = text
+                    .chars()
+                    .map(|c| if matches!(c, '"' | '\'' | '<' | '>' | ',' | ';') { ' ' } else { c })
+                    .collect();
+                self.add_links(ctx, &cleaned);
+            }
+            Err(e) => {
+                let detail = format!("{}\n{e}", path.display());
+                self.toast(
+                    icon::WARNING,
+                    Color32::from_rgb(220, 38, 38),
+                    tr("The file could not be read"),
+                    &detail,
+                    ToastTarget::None,
+                )
+            }
+        }
+    }
+
+    fn poll_hashing(&mut self, ctx: &egui::Context, p: &Palette) {
+        let mut done = Vec::new();
+        self.hashing.retain(|(name, job)| match job.poll() {
+            Some(r) => {
+                done.push((name.clone(), r));
+                false
+            }
+            None => true,
+        });
+        if !self.hashing.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        for (name, r) in done {
+            match r {
+                Ok(hash) => {
+                    ctx.copy_text(hash.clone());
+                    self.clip_last = hash.clone();
+                    let detail = format!("{name}\n{hash}");
+                    self.toast(icon::FINGERPRINT, p.success, tr("SHA-256 copied"), &detail, ToastTarget::None);
+                }
+                Err(e) => {
+                    let detail = format!("{name}\n{e:#}");
+                    self.toast(icon::WARNING, p.danger, tr("The file could not be read"), &detail, ToastTarget::None)
+                }
+            }
+        }
+    }
+
+    /// The bar at the top: the name, and the settings changed most often.
+    fn header(&mut self, ui: &mut Ui, p: &Palette) {
+        ui.horizontal_centered(|ui| {
+            ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
+            ui.add_space(2.0);
+            ui.label(theme::semibold("SwiftDM", 17.0).color(p.text));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let chip = |text: String, on: bool| {
+                    egui::Button::new(RichText::new(text).size(13.5).color(if on { p.accent } else { p.text }))
+                        .fill(if on { p.tint(p.accent) } else { p.card })
+                        .stroke(Stroke::new(1.0, if on { p.accent.gamma_multiply(0.6) } else { p.border }))
+                        .corner_radius(CornerRadius::same(9))
+                        .min_size(Vec2::new(0.0, 32.0))
+                };
+                // Help.
+                if ui.add(chip(icon::QUESTION.to_string(), self.page == Page::Help)).on_hover_text(tr("Help")).clicked()
+                {
+                    self.page = Page::Help;
+                }
+                // Language.
+                let lang = self.settings.language;
+                egui::containers::menu::MenuButton::from_button(chip(icon::GLOBE.to_string(), false))
+                    .ui(ui, |ui| {
+                        for l in i18n::Language::ALL {
+                            if ui.selectable_label(lang == l, l.label().as_ref()).clicked() {
+                                self.settings.language = l;
+                            }
+                        }
+                    })
+                    .0
+                    .on_hover_text(tr("Language"));
+                // Theme.
+                let theme_icon = if ui.visuals().dark_mode { icon::MOON } else { icon::SUN };
+                egui::containers::menu::MenuButton::from_button(chip(theme_icon.to_string(), false))
+                    .ui(ui, |ui| {
+                        for t in ThemeChoice::ALL {
+                            if ui.selectable_label(self.settings.theme == t, t.name()).clicked() {
+                                self.settings.theme = t;
+                            }
+                        }
+                    })
+                    .0
+                    .on_hover_text(tr("Theme"));
+                // When done.
+                let a = self.power.after_done;
+                egui::containers::menu::MenuButton::from_button(chip(
+                    format!("{}  {}", a.icon(), if a == AfterDone::Nothing { tr("When done") } else { a.name() }),
+                    a != AfterDone::Nothing,
+                ))
+                .ui(ui, |ui| {
+                    ui.label(RichText::new(tr("When downloads are done")).color(p.weak).size(12.5));
+                    for x in AfterDone::ALL {
+                        if ui.selectable_label(a == x, format!("{}  {}", x.icon(), x.name())).clicked() {
+                            self.power.after_done = x;
+                        }
+                    }
+                });
+                // Downloads at once.
+                let n = self.settings.max_active;
+                egui::containers::menu::MenuButton::from_button(chip(format!("{}  {n}", icon::STACK), false))
+                    .ui(ui, |ui| {
+                        ui.label(RichText::new(tr("Downloads at the same time")).color(p.weak).size(12.5));
+                        for x in 1..=6 {
+                            if ui.selectable_label(n == x, x.to_string()).clicked() {
+                                self.settings.max_active = x;
+                            }
+                        }
+                    })
+                    .0
+                    .on_hover_text(tr("Downloads at the same time"));
+                // Speed limit.
+                let kb = self.settings.speed_limit_kb;
+                let shown = if kb == 0 {
+                    tr("Unlimited").to_string()
+                } else {
+                    format!("{}/s", swiftdm::util::format_size(kb * 1024))
+                };
+                egui::containers::menu::MenuButton::from_button(chip(format!("{}  {shown}", icon::LIGHTNING), kb > 0))
+                    .ui(ui, |ui| {
+                        ui.label(RichText::new(tr("Speed limit")).color(p.weak).size(12.5));
+                        for x in [0u64, 256, 512, 1024, 2048, 5120, 10240] {
+                            let label = if x == 0 {
+                                tr("Unlimited").to_string()
+                            } else {
+                                format!("{}/s", swiftdm::util::format_size(x * 1024))
+                            };
+                            if ui.selectable_label(kb == x, label).clicked() {
+                                self.settings.speed_limit_kb = x;
+                            }
+                        }
+                    })
+                    .0
+                    .on_hover_text(tr("Speed limit"));
+                // The browser extension.
+                let connected = self.browser_seen.is_some();
+                let label = if connected {
+                    format!("{}  {}", icon::CHECK_CIRCLE, tr("Browser"))
+                } else {
+                    format!("{}  {}", icon::PUZZLE_PIECE, tr("Add to browser"))
+                };
+                let tip = if connected {
+                    tr("The browser extension is connected")
+                } else {
+                    tr("Add SwiftDM to your browser")
+                };
+                if ui.add(chip(label, !connected)).on_hover_text(tip).clicked() {
+                    self.run(&ui.ctx().clone(), Command::AddToBrowser);
+                }
+                if self.updater.available().is_some() {
+                    self.updater.button(ui, p);
+                }
+            });
+        });
     }
 
     // -----------------------------------------------------------------------
     // Layout
 
     fn sidebar(&mut self, ui: &mut Ui, p: &Palette, items: &[Item]) {
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.add_space(6.0);
-            ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(40.0)));
-            ui.vertical(|ui| {
-                ui.add_space(2.0);
-                ui.label(theme::semibold("SwiftDM", 18.0).color(p.text));
-                ui.label(RichText::new(tr("Download manager")).color(p.weak).size(12.5));
-            });
-        });
+        ui.add_space(6.0);
         // Settings and friends stay at the bottom; the filters scroll above.
         egui::Panel::bottom("sidebar-bottom").resizable(false).show_separator_line(false).frame(Frame::NONE).show(
             ui,
@@ -498,6 +800,9 @@ impl App {
                     ui.add_space(4.0);
                     if nav_item(ui, p, icon::INFO, tr("About"), self.page == Page::About, None).clicked() {
                         self.page = Page::About;
+                    }
+                    if nav_item(ui, p, icon::QUESTION, tr("Help"), self.page == Page::Help, None).clicked() {
+                        self.page = Page::Help;
                     }
                     let badge = self.updater.available().map(|_| "●");
                     if nav_item(ui, p, icon::GEAR_SIX, tr("Settings"), self.page == Page::Settings, badge).clicked() {
@@ -948,7 +1253,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if !links.is_empty() {
-                self.add_links(&ctx, &links.join(" "));
+                self.add_requests(&ctx, links);
             }
         }
 
@@ -966,6 +1271,34 @@ impl eframe::App for App {
             }
         }
 
+        for c in self.menu.commands(&ctx, self.language) {
+            self.run(&ctx, c);
+        }
+        let due = self.power.tick(
+            &ctx,
+            self.manager.busy(),
+            self.settings.keep_awake,
+            self.settings.start_at,
+            self.settings.pause_at,
+        );
+        self.on_due(&ctx, due);
+        self.poll_hashing(&ctx, &p);
+        if self.browser_checked.elapsed() > Duration::from_secs(5) {
+            self.browser_checked = Instant::now();
+            self.browser_seen = crate::browser::last_seen();
+        }
+
+        egui::Panel::top("header")
+            .exact_size(54.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(p.sidebar).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin {
+                left: 16,
+                right: 14,
+                top: 0,
+                bottom: 0,
+            }))
+            .show(ui, |ui| self.header(ui, &p));
         egui::Panel::left("sidebar")
             .exact_size(232.0)
             .resizable(false)
@@ -975,24 +1308,38 @@ impl eframe::App for App {
             .show(ui, |ui| self.sidebar(ui, &p, &items));
         egui::CentralPanel::default()
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 26, right: 26, top: 22, bottom: 18 }))
-            .show(ui, |ui| {
-                if self.updater.available().is_some() {
-                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| self.updater.button(ui, &p));
+            .show(ui, |ui| match self.page {
+                Page::Downloads => self.downloads_page(ui, &p, &items),
+                Page::Settings => {
+                    let cx = settings::Context {
+                        helpers: &mut self.helpers,
+                        updater: &mut self.updater,
+                        after_done: &mut self.power.after_done,
+                        browser_seen: self.browser_seen,
+                    };
+                    settings::page(ui, &p, &mut self.settings, &mut self.settings_page, cx);
                 }
-                match self.page {
-                    Page::Downloads => self.downloads_page(ui, &p, &items),
-                    Page::Settings => {
-                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                Page::Help => {
+                    let action = egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
                             ui.set_max_width(860.0);
-                            settings::page(ui, &p, &mut self.settings, &mut self.helpers, &mut self.updater);
-                        });
+                            crate::help::page(ui, &p)
+                        })
+                        .inner;
+                    match action {
+                        HelpAction::AddToBrowser => self.run(&ctx, Command::AddToBrowser),
+                        HelpAction::Settings => self.run(&ctx, Command::Settings),
+                        HelpAction::None => {}
                     }
-                    Page::About => self.about_page(ui, &p),
                 }
+                Page::About => self.about_page(ui, &p),
             });
         self.poll_adds(&ctx, &p);
         self.delete_dialog(&ctx, &p);
         self.updater.dialog(&ctx, &p, self.manager.busy());
+        let due = self.power.dialog(&ctx, &p);
+        self.on_due(&ctx, due);
         self.toasts_ui(&ctx, &p);
 
         if self.manager.busy() || self.helpers.busy() || self.adds.iter().any(|d| d.looking()) {
@@ -1110,4 +1457,32 @@ fn empty_state(ui: &mut Ui, p: &Palette, nothing_yet: bool, search: &str) {
             }
         });
     });
+}
+
+/// The SHA-256 of `path`, as hex.
+fn sha256(
+    path: &std::path::Path,
+    progress: &crate::jobs::Progress,
+    stop: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let total = f.metadata().map(|m| m.len()).ok();
+    let mut hash = Sha256::new();
+    let mut buf = vec![0; 1024 * 1024];
+    let mut done = 0u64;
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("cancelled");
+        }
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+        done += n as u64;
+        progress.set(done, total);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }

@@ -26,6 +26,16 @@ Downloads for users: **[itsmrroot/SwiftDM-release](https://github.com/itsmrroot/
 - Copied links are offered for download, `Ctrl/⌘+V` anywhere adds a link, notifications when downloads finish,
   queue with downloads-at-once and a global speed limit, light / dark / night themes, Arabic titles shown correctly.
 - Updates itself from the public release repository (Windows setup, macOS app, AppImage, .deb, .rpm).
+- **Browser extension** (`gui/assets/browser-extension`, Manifest V3, Chrome / Edge / Brave / Opera / Vivaldi /
+  Firefox): context menus, a button on videos, catching the browser's downloads (with its cookies), media found on
+  the page. It talks to the app through native messaging: the browser starts `swiftdm-gui` with the extension's
+  origin as argument (`gui/src/browser.rs`), which hands links to the running app (`gui/src/instance.rs`) or starts
+  it. The app registers this helper with every installed browser at each start. The extension's id
+  (`fjeibcdeopjapibjafigloehhleijepj`) comes from the `key` in its manifest.
+- Formats (MP4/MKV/WebM, MP3/M4A/Opus/FLAC/WAV), subtitles, SponsorBlock, sections; schedule, sleep/shut down when
+  done, keep awake, notifications; sort into folders, proxy, import links, SHA-256; top bar, macOS menu bar, Help.
+- `SWIFTDM_DATA_DIR=<folder>` runs a separate copy (own list, settings, helpers; no browser registration) — for
+  tests and portable use.
 
 ## Layout
 

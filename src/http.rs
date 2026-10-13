@@ -34,9 +34,51 @@ const MAX_FAILURES: u32 = 6;
 /// A server that sends nothing for this long is given up on.
 const STALL: Duration = Duration::from_secs(60);
 
-fn agent(body_timeout: Option<Duration>) -> ureq::Agent {
+/// How requests go out: through a proxy, with extra headers (the browser's
+/// cookies and page for a link sent from it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Net {
+    /// `http://host:port`, `socks5://user:pass@host:port`, ….
+    #[serde(default)]
+    pub proxy: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+}
+
+/// Headers a link may bring along from the browser.
+pub const ALLOWED_HEADERS: [&str; 4] = ["cookie", "referer", "user-agent", "origin"];
+
+impl Net {
+    /// Keeps only the headers in [`ALLOWED_HEADERS`], without line breaks.
+    pub fn sanitized(mut self) -> Self {
+        self.headers.retain(|(k, v)| {
+            ALLOWED_HEADERS.contains(&k.to_ascii_lowercase().as_str())
+                && !v.contains(['\r', '\n'])
+                && v.len() < 16 * 1024
+        });
+        self
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+}
+
+/// A GET request with `net`'s headers.
+fn get(agent: &ureq::Agent, url: &str, net: &Net) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    let mut req = agent.get(url);
+    for (k, v) in &net.headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    req
+}
+
+fn agent(body_timeout: Option<Duration>, net: &Net) -> ureq::Agent {
+    let user_agent = net.header("user-agent").unwrap_or(USER_AGENT).to_string();
+    let proxy = net.proxy.as_deref().filter(|p| !p.trim().is_empty()).and_then(|p| ureq::Proxy::new(p.trim()).ok());
     ureq::Agent::config_builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent)
+        .proxy(proxy)
         // Byte ranges must refer to the file itself, never a compressed copy.
         .accept_encoding("identity")
         .timeout_connect(Some(Duration::from_secs(20)))
@@ -71,12 +113,17 @@ impl Probe {
 
 /// Asks the server about `url` without downloading it.
 pub fn probe(url: &str) -> Result<Probe> {
+    probe_with(url, &Net::default())
+}
+
+/// Like [`probe`], through `net`.
+pub fn probe_with(url: &str, net: &Net) -> Result<Probe> {
     use ureq::ResponseExt;
-    let agent = agent(Some(Duration::from_secs(20)));
-    let mut resp = agent.get(url).header("Range", "bytes=0-0").call().map_err(net_error)?;
+    let agent = agent(Some(Duration::from_secs(20)), net);
+    let mut resp = get(&agent, url, net).header("Range", "bytes=0-0").call().map_err(net_error)?;
     if resp.status().as_u16() == 416 {
         // Some servers refuse the range of an empty file.
-        resp = agent.get(url).call().map_err(net_error)?;
+        resp = get(&agent, url, net).call().map_err(net_error)?;
     }
     let status = resp.status().as_u16();
     if status >= 400 {
@@ -204,6 +251,7 @@ pub struct Job<'a> {
     pub connections: usize,
     /// From an earlier, unfinished attempt.
     pub resume: Option<Resume>,
+    pub net: Net,
 }
 
 /// Downloads `job.url` to `job.path`.
@@ -215,7 +263,7 @@ pub fn download(
 ) -> std::result::Result<Outcome, Failure> {
     // Failures before any data arrives keep the earlier resume point.
     let keep = |error: anyhow::Error| Failure { error, resume: job.resume.clone() };
-    let probe = probe(job.url).map_err(keep)?;
+    let probe = probe_with(job.url, &job.net).map_err(keep)?;
     if stop.load(Ordering::Relaxed) {
         return Ok(Outcome::Stopped(job.resume));
     }
@@ -225,10 +273,11 @@ pub fn download(
     let part = part_path(job.path);
     let outcome = match probe.size.filter(|_| probe.resumable) {
         Some(size) => {
-            let target = Target { url: &probe.url, part: &part, size, validator: probe.validator.clone() };
+            let target =
+                Target { url: &probe.url, part: &part, size, validator: probe.validator.clone(), net: &job.net };
             ranged(target, job.connections.clamp(1, 32), job.resume, stop, limiter, report)?
         }
-        None => single(&probe.url, &part, probe.size, stop, limiter, report)?,
+        None => single(&probe.url, &job.net, &part, probe.size, stop, limiter, report)?,
     };
     if let Step::Stopped(resume) = outcome {
         return Ok(Outcome::Stopped(resume));
@@ -253,6 +302,7 @@ enum Step {
 /// One connection, no resuming: for servers without byte ranges.
 fn single(
     url: &str,
+    net: &Net,
     part: &Path,
     size: Option<u64>,
     stop: &AtomicBool,
@@ -260,7 +310,8 @@ fn single(
     report: &dyn Report,
 ) -> std::result::Result<Step, Failure> {
     // Bounded so that a reader thread left behind (see below) ends some day.
-    let resp = agent(Some(Duration::from_secs(6 * 3600))).get(url).call().map_err(net_error)?;
+    let agent = agent(Some(Duration::from_secs(6 * 3600)), net);
+    let resp = get(&agent, url, net).call().map_err(net_error)?;
     let status = resp.status().as_u16();
     if status >= 400 {
         return Err(anyhow!("{}", status_message(status)).into());
@@ -347,6 +398,7 @@ struct Shared<'a> {
     failure: Mutex<Option<anyhow::Error>>,
     limiter: &'a Limiter,
     validator: Option<String>,
+    net: &'a Net,
 }
 
 impl Shared<'_> {
@@ -400,7 +452,7 @@ impl Shared<'_> {
 
     /// Downloads segment `i`, reconnecting as needed.
     fn segment(&self, i: usize, buf: &mut [u8]) -> Result<()> {
-        let agent = agent(Some(REQUEST_SPAN));
+        let agent = agent(Some(REQUEST_SPAN), self.net);
         let mut failures = 0;
         loop {
             let (pos, end) = {
@@ -440,7 +492,8 @@ impl Shared<'_> {
     /// One request for bytes `pos..=end` of segment `i`. Returns whether any
     /// bytes arrived; a timeout after progress is a normal renewal.
     fn request(&self, agent: &ureq::Agent, i: usize, pos: u64, end: u64, buf: &mut [u8]) -> Result<bool> {
-        let mut resp = agent.get(self.url).header("Range", format!("bytes={pos}-{end}")).call().map_err(net_error)?;
+        let mut resp =
+            get(agent, self.url, self.net).header("Range", format!("bytes={pos}-{end}")).call().map_err(net_error)?;
         match resp.status().as_u16() {
             206 => {}
             200 => return Err(Fatal("the server stopped allowing resumed downloads".into()).into()),
@@ -507,6 +560,7 @@ struct Target<'a> {
     part: &'a Path,
     size: u64,
     validator: Option<String>,
+    net: &'a Net,
 }
 
 /// Several connections over byte ranges.
@@ -518,7 +572,7 @@ fn ranged(
     limiter: &Limiter,
     report: &dyn Report,
 ) -> std::result::Result<Step, Failure> {
-    let Target { url, part, size, validator } = target;
+    let Target { url, part, size, validator, net } = target;
     let keep = |error: anyhow::Error| Failure { error, resume: resume.clone() };
     // An earlier attempt is only continued if its file is still there and
     // the file on the server has not changed.
@@ -555,6 +609,7 @@ fn ranged(
         failure: Mutex::new(None),
         limiter,
         validator,
+        net,
     };
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..connections).map(|_| scope.spawn(|| shared.connection())).collect();
@@ -753,6 +808,7 @@ mod tests {
             failure: Mutex::new(None),
             limiter: &limiter,
             validator: None,
+            net: &Net::default(),
         };
         assert_eq!(shared.claim(), Some(0));
         // The only segment is taken: the next connection splits it in half.

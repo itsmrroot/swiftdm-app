@@ -18,7 +18,7 @@ use swiftdm::util::{format_eta, format_size, format_speed};
     name = "swiftdm",
     version,
     about = "Download videos, music and files from any link — 1800+ sites and any direct file.",
-    after_help = "Examples:\n  swiftdm https://www.youtube.com/watch?v=…\n  swiftdm -a -k 320 https://soundcloud.com/…\n  swiftdm -q 720 -o ~/Videos https://vimeo.com/…\n  swiftdm -c 16 https://example.com/big.iso\n  swiftdm info https://www.tiktok.com/@…\n  swiftdm helpers install\n\nPowered by Bashar Salmo.",
+    after_help = "Examples:\n  swiftdm https://www.youtube.com/watch?v=…\n  swiftdm -a -k 320 https://soundcloud.com/…\n  swiftdm -a -f flac https://…\n  swiftdm --subs en,ar --sponsorblock https://youtu.be/…\n  swiftdm --section 1:30-2:45 https://youtu.be/…\n  swiftdm -q 720 -o ~/Videos https://vimeo.com/…\n  swiftdm -c 16 https://example.com/big.iso\n  swiftdm info https://www.tiktok.com/@…\n  swiftdm helpers install\n\nPowered by Bashar Salmo.",
     args_conflicts_with_subcommands = true
 )]
 struct Cli {
@@ -83,6 +83,24 @@ struct Get {
     /// Download the link as a plain file, even from a video site.
     #[arg(long)]
     file: bool,
+    /// File type: mp4, mkv or webm for videos; mp3, m4a, opus, flac or wav with -a.
+    #[arg(short, long)]
+    format: Option<String>,
+    /// Subtitles in these languages, e.g. en,ar (all: every one).
+    #[arg(long, value_name = "LANGS")]
+    subs: Option<String>,
+    /// Cut out sponsor segments (SponsorBlock).
+    #[arg(long)]
+    sponsorblock: bool,
+    /// Only a part, e.g. 1:30-2:45.
+    #[arg(long, value_name = "FROM-TO")]
+    section: Option<String>,
+    /// Proxy for everything, e.g. socks5://127.0.0.1:9050.
+    #[arg(long)]
+    proxy: Option<String>,
+    /// Put files into a folder for their kind (Video, Music, Documents, …).
+    #[arg(long)]
+    sort: bool,
 }
 
 fn main() {
@@ -116,6 +134,18 @@ fn parse_rate(s: &str) -> Result<u64> {
     match num.trim().parse::<f64>() {
         Ok(v) if v > 0.0 => Ok((v * mul) as u64),
         _ => bail!("not a speed: {s} (try 500K or 2M)"),
+    }
+}
+
+/// `1:30-2:45` (or `90-165`, `1:02:03-1:05:00`) → seconds.
+fn parse_section(s: &str) -> Result<(u32, u32)> {
+    let secs = |t: &str| -> Option<u32> {
+        t.trim().split(':').try_fold(0u32, |acc, part| Some(acc * 60 + part.trim().parse::<u32>().ok()?))
+    };
+    let (a, b) = s.split_once('-').ok_or_else(|| anyhow::anyhow!("not a part: {s} (try 1:30-2:45)"))?;
+    match (secs(a), secs(b)) {
+        (Some(a), Some(b)) if b > a => Ok((a, b)),
+        _ => bail!("not a part: {s} (try 1:30-2:45)"),
     }
 }
 
@@ -185,14 +215,38 @@ fn get(args: Get) -> Result<()> {
         speed_limit,
         cookies_from: args.cookies.clone(),
         auto_cookies: args.cookies.is_none(),
+        proxy: args.proxy.clone(),
+        sort_by_kind: args.sort,
     });
-    let options = media::Options {
+    let mut options = media::Options {
         mode: if args.audio { Mode::Audio } else { Mode::Video },
         max_height: args.quality,
         audio_kbps: args.kbps,
         cookies_from: None,
+        subtitles: args.subs.clone().unwrap_or_default(),
+        sponsorblock: args.sponsorblock,
+        section: args.section.as_deref().map(parse_section).transpose()?,
+        ..Default::default()
     };
-    let media_wanted = args.audio || args.quality.is_some();
+    if let Some(f) = args.format.as_deref().map(str::to_ascii_lowercase) {
+        if args.audio {
+            options.audio_format = media::AudioFormat::ALL
+                .into_iter()
+                .find(|a| a.name() == f)
+                .ok_or_else(|| anyhow::anyhow!("not a sound format: {f} (mp3, m4a, opus, flac, wav)"))?;
+        } else {
+            options.container = media::Container::ALL
+                .into_iter()
+                .find(|c| c.name() == f)
+                .ok_or_else(|| anyhow::anyhow!("not a video format: {f} (mp4, mkv, webm)"))?;
+        }
+    }
+    let media_wanted = args.audio
+        || args.quality.is_some()
+        || args.format.is_some()
+        || args.subs.is_some()
+        || args.sponsorblock
+        || args.section.is_some();
     let mut needs_media = false;
     let mut youtube = false;
     let mut sources = Vec::new();
@@ -395,5 +449,8 @@ mod tests {
         assert_eq!(parse_rate("1.5MB/s").unwrap(), 1572864);
         assert_eq!(parse_rate("1000").unwrap(), 1000);
         assert!(parse_rate("fast").is_err());
+        assert_eq!(parse_section("1:30-2:45").unwrap(), (90, 165));
+        assert_eq!(parse_section("1:00:00-1:00:10").unwrap(), (3600, 3610));
+        assert!(parse_section("2:00-1:00").is_err());
     }
 }

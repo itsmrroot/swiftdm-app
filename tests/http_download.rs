@@ -114,7 +114,7 @@ fn several_connections_give_the_same_file() {
     let dir = temp_dir("multi");
     let path = dir.join("out.bin");
     let log = Log::default();
-    let job = http::Job { url: &server.url, path: &path, connections: 6, resume: None };
+    let job = http::Job { url: &server.url, path: &path, connections: 6, resume: None, net: Default::default() };
     let outcome = http::download(job, &AtomicBool::new(false), &Limiter::default(), &log).unwrap();
     let Outcome::Finished(saved) = outcome else { panic!("not finished") };
     assert_eq!(saved, path);
@@ -136,7 +136,7 @@ fn a_stopped_download_continues_where_it_was() {
         std::thread::sleep(Duration::from_millis(300));
         s.store(true, Ordering::Relaxed);
     });
-    let job = http::Job { url: &server.url, path: &path, connections: 4, resume: None };
+    let job = http::Job { url: &server.url, path: &path, connections: 4, resume: None, net: Default::default() };
     let outcome = http::download(job, &stop, &Limiter::default(), &Log::default()).unwrap();
     let Outcome::Stopped(Some(resume)) = outcome else { panic!("expected a stop with resume state") };
     let done = resume.done();
@@ -146,7 +146,8 @@ fn a_stopped_download_continues_where_it_was() {
     // The saved state survives a round trip through JSON.
     let resume: Resume = serde_json::from_str(&serde_json::to_string(&resume).unwrap()).unwrap();
     let before = server.ranged_requests.load(Ordering::Relaxed);
-    let job = http::Job { url: &server.url, path: &path, connections: 4, resume: Some(resume) };
+    let job =
+        http::Job { url: &server.url, path: &path, connections: 4, resume: Some(resume), net: Default::default() };
     let outcome = http::download(job, &AtomicBool::new(false), &Limiter::default(), &Log::default()).unwrap();
     assert!(matches!(outcome, Outcome::Finished(_)));
     assert_eq!(std::fs::read(&path).unwrap(), data);
@@ -160,7 +161,7 @@ fn servers_without_ranges_use_one_connection() {
     let server = serve(data.clone(), false, false);
     let dir = temp_dir("single");
     let path = dir.join("out.bin");
-    let job = http::Job { url: &server.url, path: &path, connections: 8, resume: None };
+    let job = http::Job { url: &server.url, path: &path, connections: 8, resume: None, net: Default::default() };
     let outcome = http::download(job, &AtomicBool::new(false), &Limiter::default(), &Log::default()).unwrap();
     assert!(matches!(outcome, Outcome::Finished(_)));
     assert_eq!(std::fs::read(&path).unwrap(), data);

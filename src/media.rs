@@ -33,6 +33,78 @@ pub struct Options {
     pub audio_kbps: u32,
     /// Browser to take the login (cookies) from: `chrome`, `firefox`, ….
     pub cookies_from: Option<String>,
+    /// For the sound only.
+    #[serde(default)]
+    pub audio_format: AudioFormat,
+    /// For videos.
+    #[serde(default)]
+    pub container: Container,
+    /// Subtitle languages, e.g. `en,ar` (`all` for every one); empty: none.
+    #[serde(default)]
+    pub subtitles: String,
+    /// Cut out sponsor segments, intros asking to subscribe and the like
+    /// (SponsorBlock).
+    #[serde(default)]
+    pub sponsorblock: bool,
+    /// Only this part, from and to in seconds.
+    #[serde(default)]
+    pub section: Option<(u32, u32)>,
+}
+
+/// File type for the sound only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AudioFormat {
+    #[default]
+    Mp3,
+    M4a,
+    Opus,
+    Flac,
+    Wav,
+}
+
+impl AudioFormat {
+    pub const ALL: [AudioFormat; 5] =
+        [AudioFormat::Mp3, AudioFormat::M4a, AudioFormat::Opus, AudioFormat::Flac, AudioFormat::Wav];
+
+    /// As yt-dlp names it, which is also the extension.
+    pub fn name(self) -> &'static str {
+        match self {
+            AudioFormat::Mp3 => "mp3",
+            AudioFormat::M4a => "m4a",
+            AudioFormat::Opus => "opus",
+            AudioFormat::Flac => "flac",
+            AudioFormat::Wav => "wav",
+        }
+    }
+
+    /// Whether a bit rate applies (not to lossless formats).
+    pub fn lossy(self) -> bool {
+        !matches!(self, AudioFormat::Flac | AudioFormat::Wav)
+    }
+}
+
+/// File type for videos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Container {
+    /// Plays everywhere (H.264 preferred).
+    #[default]
+    Mp4,
+    /// Takes any codec: the best quality as it is.
+    Mkv,
+    /// VP9 / AV1 with Opus.
+    Webm,
+}
+
+impl Container {
+    pub const ALL: [Container; 3] = [Container::Mp4, Container::Mkv, Container::Webm];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Container::Mp4 => "mp4",
+            Container::Mkv => "mkv",
+            Container::Webm => "webm",
+        }
+    }
 }
 
 /// One video, song or post.
@@ -201,6 +273,14 @@ fn base_command(ytdlp: &Path) -> std::process::Command {
     if let Some(ffmpeg) = tools::find(Tool::Ffmpeg) {
         cmd.arg("--ffmpeg-location").arg(ffmpeg);
     }
+    // The static FFmpeg for macOS does not know where the system keeps its
+    // certificates, and so fails on https (parts of videos, live streams).
+    if cfg!(target_os = "macos")
+        && std::env::var_os("SSL_CERT_FILE").is_none()
+        && Path::new("/etc/ssl/cert.pem").is_file()
+    {
+        cmd.env("SSL_CERT_FILE", "/etc/ssl/cert.pem");
+    }
     cmd
 }
 
@@ -319,6 +399,10 @@ pub struct Job<'a> {
     pub rate_limit: u64,
     /// Parts of a stream fetched at once.
     pub fragments: usize,
+    /// `http://…` or `socks5://…`.
+    pub proxy: Option<&'a str>,
+    /// The page the link was found on (sent by the browser extension).
+    pub referer: Option<&'a str>,
 }
 
 /// The yt-dlp arguments for `job` (without the program and the link).
@@ -350,24 +434,59 @@ fn download_args(job: &Job, has_ffmpeg: bool) -> Vec<String> {
     if job.rate_limit > 0 {
         a.extend(["-r".into(), job.rate_limit.to_string()]);
     }
-    if let Some(b) = &job.options.cookies_from {
+    let o = job.options;
+    if let Some(b) = &o.cookies_from {
         a.extend(["--cookies-from-browser".into(), b.clone()]);
     }
-    match job.options.mode {
+    if let Some(p) = job.proxy.filter(|p| !p.trim().is_empty()) {
+        a.extend(["--proxy".into(), p.trim().to_string()]);
+    }
+    if let Some(r) = job.referer.filter(|r| !r.is_empty()) {
+        a.extend(["--referer".into(), r.to_string()]);
+    }
+    if let Some((from, to)) = o.section.filter(|(f, t)| t > f) {
+        a.extend(["--download-sections".into(), format!("*{from}-{to}")]);
+    }
+    if has_ffmpeg && o.sponsorblock {
+        a.extend(["--sponsorblock-remove".into(), "sponsor,selfpromo,interaction".into()]);
+    }
+    match o.mode {
         Mode::Audio if has_ffmpeg => {
-            let q = if job.options.audio_kbps == 0 { "0".to_string() } else { format!("{}K", job.options.audio_kbps) };
-            a.extend(["-f".into(), "ba/b".into(), "-x".into(), "--audio-format".into(), "mp3".into()]);
-            a.extend(["--audio-quality".into(), q, "--embed-metadata".into(), "--embed-thumbnail".into()]);
+            let fmt = o.audio_format;
+            a.extend(["-f".into(), "ba/b".into(), "-x".into(), "--audio-format".into(), fmt.name().into()]);
+            if fmt.lossy() {
+                let q = if o.audio_kbps == 0 { "0".to_string() } else { format!("{}K", o.audio_kbps) };
+                a.extend(["--audio-quality".into(), q]);
+            }
+            a.push("--embed-metadata".into());
+            // WAV has no place for a cover.
+            if fmt != AudioFormat::Wav {
+                a.push("--embed-thumbnail".into());
+            }
         }
         // Without FFmpeg: the best sound as it is (usually M4A).
         Mode::Audio => a.extend(["-f".into(), "ba[ext=m4a]/ba/b".into()]),
         Mode::Video => {
-            let h = job.options.max_height;
-            // Same height: smooth, then H.264 and AAC, which every player plays.
+            let h = o.max_height;
             let res = h.map_or("res".to_string(), |h| format!("res:{h}"));
-            a.extend(["-S".into(), format!("{res},fps,vcodec:h264,acodec:m4a")]);
+            // Same height: smooth first; then the codecs that suit the file type
+            // (MP4: H.264 and AAC, which every player plays).
+            let codecs = match o.container {
+                Container::Mp4 => ",vcodec:h264,acodec:m4a",
+                Container::Webm => ",vcodec:vp9,acodec:opus",
+                Container::Mkv => "",
+            };
+            a.extend(["-S".into(), format!("{res},fps{codecs}")]);
+            if !o.subtitles.trim().is_empty() {
+                a.extend(["--write-subs".into(), "--write-auto-subs".into()]);
+                a.extend(["--sub-langs".into(), o.subtitles.trim().replace(' ', "")]);
+                if has_ffmpeg {
+                    a.push("--embed-subs".into());
+                }
+            }
             if has_ffmpeg {
-                a.extend(["--merge-output-format".into(), "mp4".into(), "--embed-metadata".into()]);
+                a.extend(["--merge-output-format".into(), o.container.name().into(), "--embed-metadata".into()]);
+                a.push("--embed-chapters".into());
             } else {
                 // Separate video and sound cannot be joined: pick one file with both.
                 let f = h.map_or("b".to_string(), |h| format!("b[height<={h}]/b"));
@@ -736,12 +855,46 @@ mod tests {
     fn arguments_follow_the_options() {
         let dir = PathBuf::from("/tmp/x");
         let opts = Options { mode: Mode::Audio, audio_kbps: 192, ..Default::default() };
-        let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 0, fragments: 4 };
+        let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 0, fragments: 4, proxy: None, referer: None };
         let a = download_args(&job, true).join(" ");
         assert!(a.contains("--audio-format mp3") && a.contains("--audio-quality 192K"));
         let opts = Options { max_height: Some(720), ..Default::default() };
-        let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 1000, fragments: 4 };
+        let job =
+            Job { url: "u", dir: &dir, options: &opts, rate_limit: 1000, fragments: 4, proxy: None, referer: None };
         let a = download_args(&job, false).join(" ");
         assert!(a.contains("-S res:720,") && a.contains("-f b[height<=720]/b") && a.contains("-r 1000"));
+        let opts = Options {
+            container: Container::Mkv,
+            subtitles: "en, ar".into(),
+            sponsorblock: true,
+            section: Some((60, 90)),
+            ..Default::default()
+        };
+        let job = Job {
+            url: "u",
+            dir: &dir,
+            options: &opts,
+            rate_limit: 0,
+            fragments: 4,
+            proxy: Some("socks5://127.0.0.1:9050"),
+            referer: Some("https://page/"),
+        };
+        let a = download_args(&job, true).join(" ");
+        for want in [
+            "--merge-output-format mkv",
+            "--sub-langs en,ar",
+            "--embed-subs",
+            "--sponsorblock-remove",
+            "--download-sections *60-90",
+            "--proxy socks5://127.0.0.1:9050",
+            "--referer https://page/",
+        ] {
+            assert!(a.contains(want), "{want} in {a}");
+        }
+        let opts =
+            Options { mode: Mode::Audio, audio_format: AudioFormat::Flac, audio_kbps: 320, ..Default::default() };
+        let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 0, fragments: 4, proxy: None, referer: None };
+        let a = download_args(&job, true).join(" ");
+        assert!(a.contains("--audio-format flac") && !a.contains("--audio-quality"));
     }
 }

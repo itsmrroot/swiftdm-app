@@ -1,0 +1,77 @@
+{
+  "name": {
+    "message": "SwiftDM — Videos und Dateien herunterladen"
+  },
+  "description": {
+    "message": "Videos, Musik und Dateien vom Browser an SwiftDM senden: schnelle Downloads über mehrere Verbindungen, über 1800 Videoseiten."
+  },
+  "menuLink": {
+    "message": "Link mit SwiftDM herunterladen"
+  },
+  "menuMedia": {
+    "message": "Dieses Video mit SwiftDM herunterladen"
+  },
+  "menuImage": {
+    "message": "Bild mit SwiftDM herunterladen"
+  },
+  "menuPage": {
+    "message": "Das Video auf dieser Seite herunterladen"
+  },
+  "menuPageAudio": {
+    "message": "Den Ton als MP3 herunterladen"
+  },
+  "connected": {
+    "message": "Mit SwiftDM verbunden"
+  },
+  "notConnected": {
+    "message": "SwiftDM ist nicht erreichbar"
+  },
+  "setupHelp": {
+    "message": "Installieren Sie SwiftDM und öffnen Sie es einmal — es verbindet sich selbst mit diesem Browser. Laden Sie danach diese Seite neu."
+  },
+  "getApp": {
+    "message": "SwiftDM holen"
+  },
+  "thisPage": {
+    "message": "Diese Seite"
+  },
+  "video": {
+    "message": "Video"
+  },
+  "sound": {
+    "message": "Ton (MP3)"
+  },
+  "found": {
+    "message": "Auf dieser Seite gefunden"
+  },
+  "nothingFound": {
+    "message": "Noch keine Video- oder Audiodateien gesehen. Spielen Sie das Video ab und öffnen Sie dies erneut."
+  },
+  "download": {
+    "message": "Herunterladen"
+  },
+  "settings": {
+    "message": "Einstellungen"
+  },
+  "catchDownloads": {
+    "message": "Downloads des Browsers an SwiftDM senden"
+  },
+  "minSize": {
+    "message": "Nur Dateien größer als (MB)"
+  },
+  "videoButton": {
+    "message": "Einen Download-Knopf auf Videos zeigen"
+  },
+  "openApp": {
+    "message": "SwiftDM öffnen"
+  },
+  "sent": {
+    "message": "An SwiftDM gesendet"
+  },
+  "failed": {
+    "message": "SwiftDM nicht erreichbar"
+  },
+  "buttonTitle": {
+    "message": "Mit SwiftDM herunterladen"
+  }
+}

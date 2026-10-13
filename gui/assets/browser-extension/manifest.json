@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "short_name": "SwiftDM",
+  "description": "__MSG_description__",
+  "version": "1.2.0",
+  "default_locale": "en",
+  "author": "Bashar Salmo",
+  "homepage_url": "https://github.com/itsmrroot/SwiftDM-release",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8IvgbIDwKTo+lDAYzxlpsMrH/PidEsuofpEHYSR6zEXJLvvcpR2YCiDTB2yQBu9wkvJ1/zkKZS63OV4H5kz9AV3GoXTa7lH8h+I9qdh+OR14nxHUYM5eb2REQ4mCHOFLE95ZyCLWRqGVH3+NK1E7eP1X20UyTO01MFtP4JDDu5CS+jsjczE5kR8kHNbEdXA4f8ayxqlK5mUjv/yZ3Sqwxr3eeD1oSgFXyOehgW71pNoMsEBPD5p0JU7IHJKX0BiUN4aRSfTasv2qEWUjwYWjUZAjcNpAHJL0QG3Bz/ubQ5rGobHtksbcDOYo3gLBRoD+aKkK2172LqsY5H1b5gzdbQIDAQAB",
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": { "default_popup": "popup.html", "default_title": "SwiftDM", "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" } },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["contextMenus", "downloads", "nativeMessaging", "storage", "cookies", "webRequest", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    { "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle", "all_frames": false }
+  ]
+}

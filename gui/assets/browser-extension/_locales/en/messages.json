@@ -1,0 +1,77 @@
+{
+  "name": {
+    "message": "SwiftDM — download videos and files"
+  },
+  "description": {
+    "message": "Send videos, music and files from the browser to SwiftDM: fast downloads over several connections, 1800+ video sites."
+  },
+  "menuLink": {
+    "message": "Download link with SwiftDM"
+  },
+  "menuMedia": {
+    "message": "Download this video with SwiftDM"
+  },
+  "menuImage": {
+    "message": "Download image with SwiftDM"
+  },
+  "menuPage": {
+    "message": "Download the video on this page"
+  },
+  "menuPageAudio": {
+    "message": "Download the sound as MP3"
+  },
+  "connected": {
+    "message": "Connected to SwiftDM"
+  },
+  "notConnected": {
+    "message": "SwiftDM is not reachable"
+  },
+  "setupHelp": {
+    "message": "Install SwiftDM and open it once — it connects itself to this browser. Then reload this page."
+  },
+  "getApp": {
+    "message": "Get SwiftDM"
+  },
+  "thisPage": {
+    "message": "This page"
+  },
+  "video": {
+    "message": "Video"
+  },
+  "sound": {
+    "message": "Sound (MP3)"
+  },
+  "found": {
+    "message": "Found on this page"
+  },
+  "nothingFound": {
+    "message": "No video or audio files seen yet. Play the video, then open this again."
+  },
+  "download": {
+    "message": "Download"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "catchDownloads": {
+    "message": "Send the browser's downloads to SwiftDM"
+  },
+  "minSize": {
+    "message": "Only files larger than (MB)"
+  },
+  "videoButton": {
+    "message": "Show a download button on videos"
+  },
+  "openApp": {
+    "message": "Open SwiftDM"
+  },
+  "sent": {
+    "message": "Sent to SwiftDM"
+  },
+  "failed": {
+    "message": "Could not reach SwiftDM"
+  },
+  "buttonTitle": {
+    "message": "Download with SwiftDM"
+  }
+}
