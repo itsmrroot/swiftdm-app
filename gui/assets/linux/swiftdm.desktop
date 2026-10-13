@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SwiftDM
+GenericName=Download Manager
+GenericName[ar]=مدير التنزيلات
+Comment=Download videos, music and files from any link
+Comment[ar]=نزّل الفيديو والموسيقى والملفات من أي رابط
+Exec=swiftdm-gui
+Icon=swiftdm
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+Keywords=download;youtube;video;music;mp3;manager;

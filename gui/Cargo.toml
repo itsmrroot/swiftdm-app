@@ -1,0 +1,83 @@
+[package]
+name = "swiftdm-gui"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Desktop app for SwiftDM"
+authors = ["Bashar Salmo"]
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "wayland", "x11", "links"] }
+egui-phosphor = "0.14.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+log = "0.4.34"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+swiftdm = { version = "1.0.0", path = ".." }
+unicode-bidi = "0.3.18"
+ureq = "3.4.2"
+
+[build-dependencies]
+winresource = "0.1.31"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.189"
+
+# Installers, built by `cargo packager --release -p swiftdm-gui` (see
+# .github/workflows/release.yml): Windows setup (NSIS), macOS .app/.dmg,
+# Linux .deb and AppImage. The binaries must be built first.
+[package.metadata.packager]
+product-name = "SwiftDM"
+identifier = "io.github.itsmrroot.swiftdm"
+description = "Download videos, music and files from any link — 1800+ sites and any direct file"
+homepage = "https://github.com/itsmrroot/SwiftDM-release"
+authors = ["Bashar Salmo"]
+publisher = "Bashar Salmo"
+copyright = "© 2026 Bashar Salmo. Powered by Bashar Salmo."
+category = "Utility"
+license-file = "../LICENSE"
+# One per system: macOS uses the .icns, Windows the .ico, Linux the PNG.
+icons = ["assets/swiftdm.icns", "assets/swiftdm.ico", "assets/icon.png"]
+# The command line comes along for scripting and keyboard use.
+binaries = [{ path = "swiftdm-gui", main = true }, { path = "swiftdm", main = false }]
+resources = [{ src = "assets/fonts/OFL.txt", target = "OFL-NotoSansArabic.txt" }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.15"
+# Ad-hoc signature over the whole bundle. Without it the app only carries
+# the linker signature, which Gatekeeper reports as "damaged" after a
+# download. Replace "-" with a Developer ID to sign and notarize.
+signing-identity = "-"
+
+[package.metadata.packager.nsis]
+# Installs for the current user: no administrator rights needed, and the
+# app can update itself.
+installMode = "currentUser"
+languages = ["English", "Arabic", "German", "Spanish", "French", "Turkish", "Russian", "SimpChinese"]
+display-language-selector = true
+
+[package.metadata.packager.deb]
+# wgpu draws with Vulkan or OpenGL.
+depends = ["libc6", "libgl1 | libvulkan1", "libxkbcommon0"]
+
+# Fedora / openSUSE package, built by `cargo generate-rpm -p gui` after the
+# release build (the .deb and AppImage come from cargo-packager above).
+[package.metadata.generate-rpm]
+name = "swiftdm"
+summary = "Download videos, music and files from any link"
+license = "MIT"
+assets = [
+    { source = "target/release/swiftdm-gui", dest = "/usr/bin/swiftdm-gui", mode = "755" },
+    { source = "target/release/swiftdm", dest = "/usr/bin/swiftdm", mode = "755" },
+    { source = "gui/assets/linux/swiftdm.desktop", dest = "/usr/share/applications/swiftdm.desktop", mode = "644" },
+    { source = "gui/assets/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/swiftdm.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/swiftdm/LICENSE", mode = "644", doc = true },
+    { source = "gui/assets/fonts/OFL.txt", dest = "/usr/share/licenses/swiftdm/OFL-NotoSansArabic.txt", mode = "644", doc = true },
+]

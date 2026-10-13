@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows and macOS packages contain the desktop app and the command
+          # line; `installer` adds a setup program / disk image next to them.
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm.exe swiftdm-gui.exe", installer: nsis, label: windows-x64 }
+          - { os: windows-latest, target: aarch64-pc-windows-msvc, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm.exe swiftdm-gui.exe", installer: nsis, label: windows-arm64 }
+          - { os: macos-latest, target: aarch64-apple-darwin, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm swiftdm-gui", installer: dmg, label: macos-apple-silicon }
+          - { os: macos-latest, target: x86_64-apple-darwin, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm swiftdm-gui", installer: dmg, label: macos-intel }
+          # Linux: a fully static command line, plus the desktop app (which
+          # loads the system's graphics libraries, so it is built for glibc).
+          # Built on the oldest supported Ubuntu, because a glibc program only
+          # runs on that glibc version or newer: built on 22.04 it runs on
+          # Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, packages: "-p swiftdm", bins: "swiftdm" }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl, packages: "-p swiftdm", bins: "swiftdm" }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm-gui", suffix: "-desktop", installer: linux, label: linux-x86_64 }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm-gui", suffix: "-desktop", installer: linux, label: linux-arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.packages }}
+      - name: Package
+        shell: bash
+        run: |
+          name=swiftdm-${GITHUB_REF_NAME}-${{ matrix.target }}${{ matrix.suffix }}
+          mkdir "$name"
+          for b in ${{ matrix.bins }}; do cp "target/${{ matrix.target }}/release/$b" "$name/"; done
+          cp README.md LICENSE "$name/"
+          # The desktop app embeds Noto Sans Arabic, whose licence must travel with it.
+          if [[ "${{ matrix.bins }}" == *swiftdm-gui* ]]; then
+            cp gui/assets/fonts/OFL.txt "$name/OFL-NotoSansArabic.txt"
+          fi
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "$name.zip" "$name" >/dev/null
+            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$name.tar.gz" "$name"
+            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+      # Published to the public repository (the code stays private): the
+      # app's updater and the download links look there.
+      - uses: softprops/action-gh-release@v2
+        with:
+          repository: itsmrroot/SwiftDM-release
+          token: ${{ secrets.RELEASES_TOKEN }}
+          target_commitish: main
+          files: ${{ env.ASSET }}
+      # And to this (private) repository, with notes from its history.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true
+
+      # Installers (configured in gui/Cargo.toml). They run after the archive is
+      # published, so a failing installer never holds back the plain download.
+      - name: Install packaging tools
+        if: matrix.installer
+        shell: bash
+        run: |
+          cargo install --locked cargo-packager@0.11.8
+          if [[ "${{ matrix.installer }}" == linux ]]; then cargo install --locked cargo-generate-rpm@0.21.0; fi
+      - name: Build installers
+        if: matrix.installer
+        shell: bash
+        env:
+          # linuxdeploy is itself an AppImage; this lets it run without FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          # No version in the name, so that the README can link to
+          # releases/latest/download/<name> and always get the newest one.
+          base=swiftdm-${{ matrix.label }}
+          # cargo-packager takes its output folder relative to gui/.
+          pkg=gui/pkg
+          pack="cargo packager --release --target ${{ matrix.target }} -p swiftdm-gui -o pkg"
+          mkdir installers
+          case "${{ matrix.installer }}" in
+            nsis)
+              $pack -f nsis
+              cp "$pkg"/*.exe "installers/$base-setup.exe" ;;
+            dmg)
+              # Binaries linked for Intel on an Apple Silicon runner carry no
+              # signature at all, and the bundle cannot be signed around them.
+              codesign --force -s - target/${{ matrix.target }}/release/swiftdm target/${{ matrix.target }}/release/swiftdm-gui
+              $pack -f app,dmg
+              # A bundle that fails this check opens as "damaged" after download.
+              codesign --verify --deep --strict --verbose=2 "$pkg"/*.app
+              cp "$pkg"/*.dmg "installers/$base.dmg" ;;
+            linux)
+              $pack -f deb,appimage
+              cargo generate-rpm -p gui --target ${{ matrix.target }} -o "$GITHUB_WORKSPACE/$pkg"
+              cp "$pkg"/*.deb "installers/$base.deb"
+              cp "$pkg"/*.AppImage "installers/$base.AppImage"
+              cp "$pkg"/*.rpm "installers/$base.rpm" ;;
+          esac
+          ls -la installers
+      - if: matrix.installer
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: itsmrroot/SwiftDM-release
+          token: ${{ secrets.RELEASES_TOKEN }}
+          target_commitish: main
+          files: installers/*
+      - if: matrix.installer
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*

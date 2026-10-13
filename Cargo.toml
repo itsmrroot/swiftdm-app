@@ -1,0 +1,40 @@
+[package]
+name = "swiftdm"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Download videos, music and files from any link: 1800+ sites and any direct file, with fast multi-connection downloads"
+authors = ["Bashar Salmo"]
+license = "MIT"
+repository = "https://github.com/itsmrroot/SwiftDM-release"
+readme = "README.md"
+keywords = ["download-manager", "downloader", "youtube", "yt-dlp", "video"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "swiftdm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = "3.5.2"
+dirs = "6.0.0"
+indicatif = "0.18.6"
+log = "0.4.34"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+ureq = "3.4.2"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.189"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace]
+members = ["gui"]
