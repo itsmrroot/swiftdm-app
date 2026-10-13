@@ -161,21 +161,30 @@ fn semibold_family() -> FontFamily {
     FontFamily::Name(SEMIBOLD.into())
 }
 
-/// The system's own CJK font (tens of MB), loaded only once a title needs it.
-fn system_cjk_font() -> Option<FontData> {
-    let candidates: &[&str] = if cfg!(windows) {
-        &[r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\YuGothM.ttc", r"C:\Windows\Fonts\malgun.ttf"]
-    } else if cfg!(target_os = "macos") {
-        &["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/STHeiti Medium.ttc"]
-    } else {
+/// The system's own CJK fonts (tens of MB), loaded only once a title needs
+/// them: one with Chinese and Japanese, and one with Korean, which the
+/// Chinese fonts of Windows and macOS lack.
+fn system_cjk_fonts() -> Vec<FontData> {
+    let groups: &[&[&str]] = if cfg!(windows) {
         &[
+            &[r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\YuGothM.ttc", r"C:\Windows\Fonts\simsun.ttc"],
+            &[r"C:\Windows\Fonts\malgun.ttf"],
+        ]
+    } else if cfg!(target_os = "macos") {
+        &[
+            &["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/STHeiti Medium.ttc"],
+            &["/System/Library/Fonts/AppleSDGothicNeo.ttc"],
+        ]
+    } else {
+        // Noto Sans CJK has all three.
+        &[&[
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        ]
+        ]]
     };
-    candidates.iter().find_map(|p| std::fs::read(p).ok()).map(FontData::from_owned)
+    groups.iter().filter_map(|g| g.iter().find_map(|p| std::fs::read(p).ok())).map(FontData::from_owned).collect()
 }
 
 /// System UI font (Segoe UI on Windows, SF on macOS), Phosphor icons, the
@@ -225,13 +234,16 @@ pub fn install_fonts(ctx: &egui::Context, lang: i18n::Lang, cjk: bool) {
     rtl.extend(proportional.iter().filter(|f| *f != "arabic").cloned());
     let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
     monospace.push("arabic".into());
-    if cjk && let Some(data) = system_cjk_font() {
-        fonts.font_data.insert("cjk".into(), Arc::new(data));
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            fonts.families.entry(family).or_default().push("cjk".into());
+    if cjk {
+        for (n, data) in system_cjk_fonts().into_iter().enumerate() {
+            let name = format!("cjk-{n}");
+            fonts.font_data.insert(name.clone(), Arc::new(data));
+            for family in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+            semibold.push(name.clone());
+            rtl.push(name);
         }
-        semibold.push("cjk".into());
-        rtl.push("cjk".into());
     }
     fonts.families.insert(semibold_family(), semibold);
     fonts.families.insert(FontFamily::Name(text::RTL.into()), rtl);

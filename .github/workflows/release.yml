@@ -1,5 +1,8 @@
 name: Release
 
+# A release is made public only once every system has built: until then it
+# is a draft, so the download links and the in-app updater never point at
+# files that are not there yet.
 on:
   push:
     tags: ["v*"]
@@ -7,9 +10,31 @@ on:
 permissions:
   contents: write
 
+env:
+  # The public repository the downloads live in (the code stays private).
+  PUBLIC: itsmrroot/SwiftDM-release
+
 jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Draft releases
+        env:
+          PRIVATE_TOKEN: ${{ github.token }}
+          PUBLIC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          GH_TOKEN="$PRIVATE_TOKEN" gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            GH_TOKEN="$PRIVATE_TOKEN" gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "SwiftDM ${tag#v}" --generate-notes
+          GH_TOKEN="$PUBLIC_TOKEN" gh release view "$tag" -R "$PUBLIC" >/dev/null 2>&1 ||
+            GH_TOKEN="$PUBLIC_TOKEN" gh release create "$tag" -R "$PUBLIC" --draft --target main \
+              --title "SwiftDM ${tag#v}" \
+              --notes "Downloads for Windows, macOS and Linux — see the [install guide](https://github.com/$PUBLIC#-install)."
+
   build:
     name: ${{ matrix.target }}
+    needs: draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -38,40 +63,30 @@ jobs:
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.packages }}
+      # Binaries linked for Intel on an Apple Silicon runner carry no
+      # signature at all: sign them before they go into archives or bundles.
+      - if: runner.os == 'macOS'
+        run: codesign --force -s - ${{ format('target/{0}/release/swiftdm target/{0}/release/swiftdm-gui', matrix.target) }}
       - name: Package
         shell: bash
         run: |
           name=swiftdm-${GITHUB_REF_NAME}-${{ matrix.target }}${{ matrix.suffix }}
           mkdir "$name"
           for b in ${{ matrix.bins }}; do cp "target/${{ matrix.target }}/release/$b" "$name/"; done
-          cp README.md LICENSE "$name/"
+          # The users' README, not the developers'.
+          cp release-page/README.md "$name/README.md"
+          cp LICENSE "$name/"
           # The desktop app embeds Noto Sans Arabic, whose licence must travel with it.
           if [[ "${{ matrix.bins }}" == *swiftdm-gui* ]]; then
             cp gui/assets/fonts/OFL.txt "$name/OFL-NotoSansArabic.txt"
           fi
+          mkdir upload
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a "$name.zip" "$name" >/dev/null
-            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+            7z a "upload/$name.zip" "$name" >/dev/null
           else
-            tar czf "$name.tar.gz" "$name"
-            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+            tar czf "upload/$name.tar.gz" "$name"
           fi
-      # Published to the public repository (the code stays private): the
-      # app's updater and the download links look there.
-      - uses: softprops/action-gh-release@v2
-        with:
-          repository: itsmrroot/SwiftDM-release
-          token: ${{ secrets.RELEASES_TOKEN }}
-          target_commitish: main
-          files: ${{ env.ASSET }}
-      # And to this (private) repository, with notes from its history.
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ASSET }}
-          generate_release_notes: true
 
-      # Installers (configured in gui/Cargo.toml). They run after the archive is
-      # published, so a failing installer never holds back the plain download.
       - name: Install packaging tools
         if: matrix.installer
         shell: bash
@@ -97,9 +112,6 @@ jobs:
               $pack -f nsis
               cp "$pkg"/*.exe "installers/$base-setup.exe" ;;
             dmg)
-              # Binaries linked for Intel on an Apple Silicon runner carry no
-              # signature at all, and the bundle cannot be signed around them.
-              codesign --force -s - target/${{ matrix.target }}/release/swiftdm target/${{ matrix.target }}/release/swiftdm-gui
               $pack -f app,dmg
               # A bundle that fails this check opens as "damaged" after download.
               codesign --verify --deep --strict --verbose=2 "$pkg"/*.app
@@ -112,14 +124,26 @@ jobs:
               cp "$pkg"/*.rpm "installers/$base.rpm" ;;
           esac
           ls -la installers
-      - if: matrix.installer
-        uses: softprops/action-gh-release@v2
-        with:
-          repository: itsmrroot/SwiftDM-release
-          token: ${{ secrets.RELEASES_TOKEN }}
-          target_commitish: main
-          files: installers/*
-      - if: matrix.installer
-        uses: softprops/action-gh-release@v2
-        with:
-          files: installers/*
+          cp installers/* upload/
+
+      - name: Upload
+        shell: bash
+        env:
+          PRIVATE_TOKEN: ${{ github.token }}
+          PUBLIC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          command -v gh >/dev/null || { sudo apt-get update && sudo apt-get install -y gh; }
+          GH_TOKEN="$PUBLIC_TOKEN" gh release upload "$GITHUB_REF_NAME" upload/* -R "$PUBLIC" --clobber
+          GH_TOKEN="$PRIVATE_TOKEN" gh release upload "$GITHUB_REF_NAME" upload/* -R "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish releases
+        env:
+          PRIVATE_TOKEN: ${{ github.token }}
+          PUBLIC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          GH_TOKEN="$PUBLIC_TOKEN" gh release edit "$GITHUB_REF_NAME" -R "$PUBLIC" --draft=false --latest
+          GH_TOKEN="$PRIVATE_TOKEN" gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest

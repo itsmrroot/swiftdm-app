@@ -145,7 +145,8 @@ Files go to **Downloads/SwiftDM** — change it in **Settings**.
 
 ## 💻 Command line
 
-The desktop app comes with the `swiftdm` command:
+The desktop app comes with the `swiftdm` command. The Linux packages put it on the `PATH`; on Windows, macOS and
+with the AppImage, **About → Command line** in the app shows where it is.
 
 ```bash
 swiftdm https://youtu.be/…                  # best video

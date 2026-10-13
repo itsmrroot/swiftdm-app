@@ -174,8 +174,19 @@ pub fn installable(tool: Tool) -> bool {
     }
 }
 
+/// Whether this Linux uses musl (Alpine and others), whose programs differ.
+fn musl_system() -> bool {
+    cfg!(target_os = "linux")
+        && std::fs::read_dir("/lib")
+            .map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
+            .unwrap_or(false)
+}
+
 fn ytdlp_asset() -> Option<&'static str> {
     let arm = cfg!(target_arch = "aarch64");
+    if musl_system() {
+        return Some(if arm { "yt-dlp_musllinux_aarch64" } else { "yt-dlp_musllinux" });
+    }
     Some(if cfg!(windows) {
         if arm { "yt-dlp_arm64.exe" } else { "yt-dlp.exe" }
     } else if cfg!(target_os = "macos") {
@@ -188,6 +199,10 @@ fn ytdlp_asset() -> Option<&'static str> {
 }
 
 fn deno_triple() -> Option<&'static str> {
+    // Deno is only built for glibc.
+    if musl_system() {
+        return None;
+    }
     let arm = cfg!(target_arch = "aarch64");
     Some(match (std::env::consts::OS, arm) {
         ("windows", false) => "x86_64-pc-windows-msvc",

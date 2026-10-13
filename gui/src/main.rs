@@ -7,6 +7,7 @@ mod add;
 mod app;
 mod helpers;
 mod i18n;
+mod instance;
 mod jobs;
 mod list;
 mod settings;
@@ -28,9 +29,18 @@ fn icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    // Links given when starting ("Open with", scripts, browser add-ons).
+    let links: Vec<String> = std::env::args().skip(1).filter(|a| swiftdm::util::is_link(a)).collect();
+    let inbox = match instance::start(&links) {
+        instance::Start::First(inbox) => inbox,
+        // The running SwiftDM took the links.
+        instance::Start::Handed => return Ok(()),
+    };
     let viewport = egui::ViewportBuilder::default()
         .with_title("SwiftDM")
-        .with_app_id("swiftdm")
+        // The name of the desktop file (and icon) of the Linux packages, so that
+        // the window belongs to its launcher.
+        .with_app_id("swiftdm-gui")
         .with_inner_size(app::DEFAULT_SIZE)
         .with_min_inner_size(app::MIN_SIZE)
         .with_icon(icon());
@@ -41,5 +51,5 @@ fn main() -> eframe::Result {
         centered: true,
         ..Default::default()
     };
-    eframe::run_native("SwiftDM", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native("SwiftDM", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, inbox, links)))))
 }

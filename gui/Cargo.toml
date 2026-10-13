@@ -65,8 +65,11 @@ languages = ["English", "Arabic", "German", "Spanish", "French", "Turkish", "Rus
 display-language-selector = true
 
 [package.metadata.packager.deb]
-# wgpu draws with Vulkan or OpenGL.
-depends = ["libc6", "libgl1 | libvulkan1", "libxkbcommon0"]
+# wgpu draws with Vulkan or OpenGL; pkexec asks for the password when an
+# update is installed through the package manager.
+depends = ["libc6", "libgl1 | libvulkan1", "libxkbcommon0", "pkexec | policykit-1"]
+# Our own entry (translated names, categories); also used by the AppImage.
+desktop-template = "assets/linux/swiftdm-gui.desktop"
 
 # Fedora / openSUSE package, built by `cargo generate-rpm -p gui` after the
 # release build (the .deb and AppImage come from cargo-packager above).
@@ -77,8 +80,12 @@ license = "MIT"
 assets = [
     { source = "target/release/swiftdm-gui", dest = "/usr/bin/swiftdm-gui", mode = "755" },
     { source = "target/release/swiftdm", dest = "/usr/bin/swiftdm", mode = "755" },
-    { source = "gui/assets/linux/swiftdm.desktop", dest = "/usr/share/applications/swiftdm.desktop", mode = "644" },
-    { source = "gui/assets/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/swiftdm.png", mode = "644" },
+    { source = "gui/assets/linux/swiftdm-gui.desktop", dest = "/usr/share/applications/swiftdm-gui.desktop", mode = "644" },
+    { source = "gui/assets/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/swiftdm-gui.png", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/licenses/swiftdm/LICENSE", mode = "644", doc = true },
     { source = "gui/assets/fonts/OFL.txt", dest = "/usr/share/licenses/swiftdm/OFL-NotoSansArabic.txt", mode = "644", doc = true },
 ]
+
+[package.metadata.generate-rpm.requires]
+# Asks for the password when an update is installed.
+polkit = "*"

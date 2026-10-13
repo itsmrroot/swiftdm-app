@@ -14,6 +14,7 @@ use swiftdm::util::{FileKind, is_link};
 use crate::add::{self, AddDialog};
 use crate::helpers::Helpers;
 use crate::i18n::{self, icon_label, tr, trl};
+use crate::instance::Inbox;
 use crate::list::{self, RowAction};
 use crate::settings::{self, Settings};
 use crate::text;
@@ -114,10 +115,19 @@ pub struct App {
     cjk_loaded: bool,
     cjk_checked: Instant,
     focus_url: bool,
+    /// Links from later starts of the app.
+    inbox: Option<Inbox>,
+    /// When this run began: items added since get notifications even if
+    /// they finished between two frames.
+    session_start: i64,
+    /// The language choice the interface was last set to.
+    applied_language: Option<i18n::Language>,
+    /// Whether copied links were watched in the last frame.
+    clip_watching: bool,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, inbox: Inbox, links: Vec<String>) -> Self {
         #[allow(unused_mut)]
         let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
         // Development aid: screenshots in each language ("ar", "de", "tr").
@@ -183,6 +193,10 @@ impl App {
             cjk_loaded: false,
             cjk_checked: Instant::now(),
             focus_url: true,
+            inbox: None,
+            session_start: swiftdm::util::now(),
+            applied_language: None,
+            clip_watching: false,
         };
         // Development aid: open a page for screenshots.
         #[cfg(debug_assertions)]
@@ -191,8 +205,8 @@ impl App {
             Ok("about") => app.page = Page::About,
             _ => {}
         }
-        // Links given when starting ("Open with", scripts, browser add-ons).
-        let links: Vec<String> = std::env::args().skip(1).filter(|a| is_link(a)).collect();
+        inbox.attach(ctx);
+        app.inbox = Some(inbox);
         if !links.is_empty() {
             app.add_links(ctx, &links.join(" "));
         }
@@ -218,7 +232,12 @@ impl App {
             ctx.set_zoom_factor(self.settings.ui_scale);
             self.applied = Some(want);
         }
-        let lang = i18n::set_language(self.settings.language);
+        // The system language is looked up only when the choice changes.
+        if self.applied_language != Some(self.settings.language) {
+            self.applied_language = Some(self.settings.language);
+            i18n::set_language(self.settings.language);
+        }
+        let lang = i18n::current();
         if lang != self.language {
             // Arabic needs its font first (see `i18n`).
             theme::install_fonts(ctx, lang, self.cjk_loaded);
@@ -244,6 +263,8 @@ impl App {
             );
             return;
         }
+        // Their "download the copied link?" offers are answered.
+        self.toasts.retain(|t| !matches!(&t.target, ToastTarget::Link(u) if links.contains(&u.as_str())));
         // Several links at once start without questions.
         let quick = !self.settings.ask_first || links.len() > 1;
         for l in links {
@@ -324,7 +345,14 @@ impl App {
         let mut news = Vec::new();
         for item in items {
             let before = self.seen.insert(item.id, item.status);
-            if before == Some(Status::Active) && item.status != Status::Active {
+            // Also when it went by between two frames (or while the window
+            // was hidden), and for downloads of this run seen first finished.
+            let ended = matches!(item.status, Status::Done | Status::Failed);
+            let new = match before {
+                Some(b) => b != item.status,
+                None => item.added >= self.session_start,
+            };
+            if ended && new {
                 news.push((item.id, item.status, item.display_name().to_string(), item.error.clone()));
             }
         }
@@ -342,7 +370,10 @@ impl App {
         }
         if !self.cjk_loaded && self.cjk_checked.elapsed() > Duration::from_secs(1) {
             self.cjk_checked = Instant::now();
-            if items.iter().any(|i| text::has_cjk(&i.name)) {
+            let titles = items.iter().map(|i| i.name.as_str());
+            let elsewhere =
+                self.adds.iter().flat_map(|d| d.texts()).chain(self.toasts.iter().map(|t| t.detail.as_str()));
+            if titles.chain(elsewhere).any(text::has_cjk) {
                 theme::install_fonts(ctx, self.language, true);
                 self.cjk_loaded = true;
             }
@@ -351,7 +382,15 @@ impl App {
 
     /// Offers links copied in other programs.
     fn watch_clipboard(&mut self, ctx: &egui::Context, p: &Palette) {
-        if !self.settings.watch_clipboard || self.clip_checked.elapsed() < Duration::from_millis(900) {
+        let watching = self.settings.watch_clipboard;
+        let just_turned_on = watching && !self.clip_watching;
+        self.clip_watching = watching;
+        if just_turned_on {
+            // What was copied while it was off is not offered.
+            self.clip_last =
+                self.clipboard.as_mut().and_then(|c| c.get_text().ok()).unwrap_or_default().trim().to_string();
+        }
+        if !watching || self.clip_checked.elapsed() < Duration::from_millis(900) {
             return;
         }
         self.clip_checked = Instant::now();
@@ -362,9 +401,16 @@ impl App {
             return;
         }
         self.clip_last = text.clone();
-        let known = self.manager.items().iter().any(|i| i.url == text) || self.adds.iter().any(|d| d.url == text);
-        if is_link(&text) && !known {
-            let host = swiftdm::util::host(&text).to_string();
+        let items = self.manager.items();
+        let known = |l: &str| items.iter().any(|i| i.url == l) || self.adds.iter().any(|d| d.url == l);
+        let new: Vec<&str> = text.split_whitespace().filter(|l| is_link(l) && !known(l)).collect();
+        if !new.is_empty() {
+            let host = if new.len() == 1 {
+                swiftdm::util::host(new[0]).to_string()
+            } else {
+                i18n::trlf("{n} links", &[("n", &new.len())])
+            };
+            let text = new.join("\n");
             self.toast(icon::CLIPBOARD_TEXT, p.accent, tr("Download the copied link?"), &host, ToastTarget::Link(text));
             if !ctx.input(|i| i.focused) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -574,7 +620,9 @@ impl App {
                 self.helpers.progress_ui(ui, p);
             });
             ui.add_space(12.0);
-            return;
+            if self.helpers.busy() {
+                return;
+            }
         }
         if missing_ytdlp || (missing_other && !self.settings.welcomed) {
             theme::card(ui, p, |ui| {
@@ -704,6 +752,20 @@ impl App {
                 ui.set_width(ui.available_width());
                 theme::section_title(ui, p, icon::TERMINAL_WINDOW, tr("Command line"));
                 theme::paragraph(ui, trl("The installation also brings the swiftdm command, for scripts and the keyboard:"), 14.5, p.weak);
+                // Only the Linux packages put it on the PATH: show where it is.
+                let cli = std::env::current_exe().ok().and_then(|exe| {
+                    Some(exe.parent()?.join(if cfg!(windows) { "swiftdm.exe" } else { "swiftdm" }))
+                });
+                if let Some(cli) = cli.filter(|c| c.is_file()) {
+                    let shown = cli.display().to_string();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr("It is here:")).color(p.weak));
+                        ui.label(RichText::new(&shown).monospace().size(13.0));
+                        if ui.small_button(icon::COPY).on_hover_text(tr("Copy")).clicked() {
+                            ui.ctx().copy_text(shown.clone());
+                        }
+                    });
+                }
                 ui.add_space(4.0);
                 for line in [
                     "swiftdm https://youtu.be/…              # best video",
@@ -881,6 +943,14 @@ impl eframe::App for App {
         let items = self.manager.items();
         self.watch_items(&ctx, &items, &p);
         self.watch_clipboard(&ctx, &p);
+        while let Some(links) = self.inbox.as_ref().and_then(Inbox::poll) {
+            // Another start of the app: show this window.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if !links.is_empty() {
+                self.add_links(&ctx, &links.join(" "));
+            }
+        }
 
         // Ctrl/Cmd+V outside a text field adds the link.
         let nothing_focused = ctx.memory(|m| m.focused().is_none());
@@ -889,7 +959,7 @@ impl eframe::App for App {
                 i.events.iter().find_map(|e| if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None })
             });
             if let Some(text) = pasted
-                && is_link(text.trim())
+                && text.split_whitespace().any(is_link)
             {
                 self.clip_last = text.trim().to_string();
                 self.add_links(&ctx, &text);

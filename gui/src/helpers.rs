@@ -20,6 +20,8 @@ pub struct Helpers {
     /// Known state of each tool; `None` until first looked at.
     status: Option<Vec<Status>>,
     looking: Option<Job<Vec<Status>>>,
+    /// Something changed while looking: look again afterwards.
+    look_again: bool,
     installing: Option<(Tool, Job<PathBuf>)>,
     queue: VecDeque<Tool>,
     update_check: Option<Job<bool>>,
@@ -34,6 +36,7 @@ impl Helpers {
         let mut h = Helpers {
             status: None,
             looking: None,
+            look_again: false,
             installing: None,
             queue: VecDeque::new(),
             update_check: None,
@@ -59,9 +62,12 @@ impl Helpers {
 
     /// Looks at the tools again (in the background).
     pub fn refresh(&mut self, ctx: &egui::Context) {
-        if self.looking.is_none() {
-            self.looking = Some(Job::spawn(ctx, |_, _| Ok(Tool::ALL.iter().map(|t| tools::status(*t)).collect())));
+        if self.looking.is_some() {
+            // What it finds may be from before the change.
+            self.look_again = true;
+            return;
         }
+        self.looking = Some(Job::spawn(ctx, |_, _| Ok(Tool::ALL.iter().map(|t| tools::status(*t)).collect())));
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) {
@@ -71,6 +77,9 @@ impl Helpers {
             self.looking = None;
             if let Ok(s) = r {
                 self.status = Some(s);
+            }
+            if std::mem::take(&mut self.look_again) {
+                self.refresh(ctx);
             }
         }
         if let Some(job) = &self.update_check
@@ -195,11 +204,18 @@ impl Helpers {
             });
             theme::bar(ui, p, fraction, p.accent, ui.available_width().min(520.0));
         }
+        let mut dismiss = false;
         if let Some(e) = &self.error {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::WARNING).color(p.danger));
+                if ui.small_button(icon::X).on_hover_text(tr("Close")).clicked() {
+                    dismiss = true;
+                }
                 theme::paragraph(ui, e, 14.0, p.danger);
             });
+        }
+        if dismiss {
+            self.error = None;
         }
     }
 
@@ -247,7 +263,7 @@ impl Helpers {
                     } else if s.managed {
                         if ui.button(tr("Remove")).on_hover_text(tr("Delete SwiftDM's own copy")).clicked() {
                             if let Err(e) = tools::uninstall(s.tool) {
-                                self.error = Some(format!("{e:#}"));
+                                self.error = Some(i18n::engine(&format!("{e:#}")));
                             }
                             self.refresh(&ctx);
                         }

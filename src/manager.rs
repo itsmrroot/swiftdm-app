@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::http::{self, Limiter, Outcome, Resume};
 use crate::media::{self, ErrorKind, Mode};
-use crate::util::{FileKind, now, sanitize_filename, unique_path};
+use crate::util::{FileKind, now, sanitize_filename, unique_path_except};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
@@ -484,6 +484,11 @@ impl Manager {
             if s.running.len() >= s.settings.max_active.max(1) {
                 break;
             }
+            // Still stopping from before (paused and continued quickly): it
+            // starts again when that worker has ended.
+            if s.running.contains_key(&id) {
+                continue;
+            }
             let stop = Arc::new(AtomicBool::new(false));
             s.running.insert(id, stop.clone());
             if let Some(item) = s.items.iter_mut().find(|i| i.id == id) {
@@ -497,7 +502,10 @@ impl Manager {
                 m.run(id, &stop);
                 {
                     let mut s = m.inner.lock();
-                    s.running.remove(&id);
+                    // Only this worker's own entry.
+                    if s.running.get(&id).is_some_and(|f| Arc::ptr_eq(f, &stop)) {
+                        s.running.remove(&id);
+                    }
                     s.dirty = true;
                 }
                 m.schedule();
@@ -522,6 +530,10 @@ impl Manager {
 
     fn fail(&self, id: u64, message: String) {
         self.inner.update(id, |i| {
+            // Paused or started again meanwhile: the user's choice stands.
+            if i.status != Status::Active {
+                return;
+            }
             i.status = Status::Failed;
             i.error = Some(message);
             i.speed = 0.0;
@@ -569,35 +581,59 @@ impl Manager {
                 if let Err(e) = std::fs::create_dir_all(&item.dir) {
                     return self.fail(id, format!("Cannot create {}: {e}", item.dir.display()));
                 }
-                let p = unique_path(&item.dir, &name);
-                self.inner.update(id, |i| {
-                    i.name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    i.path = Some(p.clone());
-                });
+                // Chosen under the lock, so that two downloads of the same
+                // name never pick the same file.
+                let mut s = self.inner.lock();
+                let p = {
+                    let others: Vec<&Path> = s
+                        .items
+                        .iter()
+                        .filter(|i| i.id != id && i.status != Status::Done)
+                        .filter_map(|i| i.path.as_deref())
+                        .collect();
+                    unique_path_except(&item.dir, &name, &others)
+                };
+                let Some(i) = s.items.iter_mut().find(|i| i.id == id) else { return };
+                i.name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                i.path = Some(p.clone());
+                drop(s);
+                self.inner.notify();
                 p
             }
         };
+        if stop.load(Ordering::Relaxed) {
+            return self.stopped(id, item.resume.clone());
+        }
         let connections = self.settings().connections;
         let report = Progress::new(self.inner.clone(), id);
         let job = http::Job { url: &item.url, path: &path, connections, resume: item.resume.clone() };
         match http::download(job, stop, &self.inner.limiter, &report) {
             Ok(Outcome::Finished(p)) => self.finish(id, p),
-            Ok(Outcome::Stopped(resume)) => {
-                let status = self.stopped_status();
-                self.inner.update(id, |i| {
-                    i.resume = resume;
-                    if i.status == Status::Active {
-                        i.status = status;
-                    }
-                    i.speed = 0.0;
-                    i.eta = None;
-                });
-            }
+            Ok(Outcome::Stopped(resume)) => self.stopped(id, resume),
             Err(f) => {
-                self.inner.update(id, |i| i.resume = f.resume);
+                if f.resume.is_some() {
+                    self.inner.update(id, |i| i.resume = f.resume);
+                }
                 self.fail(id, capitalize(&format!("{:#}", f.error)));
             }
         }
+        // Removed while it ran: nothing of it may stay behind.
+        if self.item(id).is_none() {
+            let _ = std::fs::remove_file(crate::util::part_path(&path));
+        }
+    }
+
+    /// A plain download stopped on request.
+    fn stopped(&self, id: u64, resume: Option<Resume>) {
+        let status = self.stopped_status();
+        self.inner.update(id, |i| {
+            i.resume = resume;
+            if i.status == Status::Active {
+                i.status = status;
+            }
+            i.speed = 0.0;
+            i.eta = None;
+        });
     }
 
     fn run_media(&self, id: u64, mut options: media::Options, stop: &AtomicBool) {

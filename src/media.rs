@@ -227,6 +227,9 @@ fn parse_info(v: &Value) -> Found {
         if f.get("vcodec").and_then(Value::as_str) == Some("none") || h == 0 {
             continue;
         }
+        // yt-dlp's "res" (used to pick the quality) is the smaller side, so
+        // a portrait 1080 × 1920 video is "1080p".
+        let h = f.get("width").and_then(Value::as_u64).filter(|w| *w > 0).map_or(h, |w| w.min(h));
         let audio_inside = f.get("acodec").and_then(Value::as_str).is_some_and(|a| a != "none");
         let est = size(f).map(|s| if audio_inside { s } else { s + best_audio });
         match heights.iter_mut().find(|(x, _)| *x == h as u32) {
@@ -642,6 +645,14 @@ mod tests {
         assert_eq!(i.heights, vec![1080, 720, 360]);
         assert_eq!(i.sizes, vec![Some(3100), Some(1100), Some(50)]);
         assert_eq!(i.uploader, "U");
+        // Portrait: the smaller side counts.
+        let v: Value = serde_json::from_str(
+            r#"{"title":"S","formats":[{"width":1080,"height":1920,"vcodec":"avc1","acodec":"none","filesize":40},
+                {"width":480,"height":854,"vcodec":"avc1","acodec":"none","filesize":10}]}"#,
+        )
+        .unwrap();
+        let Found::Single(i) = parse_info(&v) else { panic!() };
+        assert_eq!((i.heights, i.sizes), (vec![1080, 480], vec![Some(40), Some(10)]));
         let v: Value = serde_json::from_str(
             r#"{"_type":"playlist","title":"P","entries":[{"title":"a","url":"https://y/1"},{"url":"https://y/2"}]}"#,
         )

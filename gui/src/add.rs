@@ -390,6 +390,18 @@ impl AddDialog {
         action
     }
 
+    /// Titles shown in the dialog (to load fonts for their script).
+    pub fn texts(&self) -> Vec<&str> {
+        match &self.stage {
+            Stage::Media(info) => vec![info.title.as_str(), info.uploader.as_str()],
+            Stage::Playlist { title, entries, .. } => {
+                std::iter::once(title.as_str()).chain(entries.iter().map(|e| e.title.as_str())).collect()
+            }
+            Stage::File(_) => vec![self.file_name.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
     /// Looking failed (to look again once helpers are installed).
     pub fn failed(&self) -> bool {
         matches!(self.stage, Stage::Failed(_))

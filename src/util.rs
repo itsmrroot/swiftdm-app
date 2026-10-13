@@ -52,11 +52,20 @@ pub fn sanitize_filename(name: &str) -> String {
     if reserved {
         out.insert(0, '_');
     }
-    if out.chars().count() > 180 {
+    // Most file systems allow 255 bytes per name (not characters: an Arabic
+    // or Chinese character takes 2-3); room is left for " (2)" and ".part".
+    const MAX_BYTES: usize = 200;
+    if out.len() > MAX_BYTES {
         let ext = Path::new(&out).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
-        let keep = 180 - ext.chars().count().min(20) - 1;
-        let stem: String = out.chars().take(keep).collect();
-        out = if ext.is_empty() || ext.chars().count() > 20 { stem } else { format!("{stem}.{ext}") };
+        let ext = if ext.is_empty() || ext.len() > 20 { String::new() } else { format!(".{ext}") };
+        let mut stem = String::new();
+        for c in out.chars() {
+            if stem.len() + c.len_utf8() + ext.len() > MAX_BYTES {
+                break;
+            }
+            stem.push(c);
+        }
+        out = format!("{}{ext}", stem.trim_end_matches(['.', ' ']));
     }
     if out.is_empty() { "download".into() } else { out }
 }
@@ -64,7 +73,13 @@ pub fn sanitize_filename(name: &str) -> String {
 /// `dir/name`, or `dir/name (2).ext` and so on if that already exists
 /// (also counting an unfinished `.part` download of the same name).
 pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let taken = |p: &Path| p.exists() || part_path(p).exists();
+    unique_path_except(dir, name, &[])
+}
+
+/// Like [`unique_path`], also avoiding `reserved` (files other downloads
+/// will write, which may not exist yet).
+pub fn unique_path_except(dir: &Path, name: &str, reserved: &[&Path]) -> PathBuf {
+    let taken = |p: &Path| p.exists() || part_path(p).exists() || reserved.contains(&p);
     let first = dir.join(name);
     if !taken(&first) {
         return first;
@@ -168,7 +183,8 @@ pub fn percent_decode(s: &str) -> String {
             i += 3;
             continue;
         }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        // `+` is only a space in query strings, never in paths or names.
+        out.push(bytes[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
@@ -246,7 +262,10 @@ mod tests {
         assert_eq!(sanitize_filename(""), "download");
         let long = format!("{}.mp4", "x".repeat(300));
         let s = sanitize_filename(&long);
-        assert!(s.ends_with(".mp4") && s.chars().count() <= 180);
+        assert!(s.ends_with(".mp4") && s.len() <= 200);
+        let arabic = format!("{}.zip", "ملف".repeat(100));
+        let s = sanitize_filename(&arabic);
+        assert!(s.ends_with(".zip") && s.len() <= 200, "{}", s.len());
     }
 
     #[test]
@@ -258,6 +277,7 @@ mod tests {
         assert_eq!(host("https://www.YouTube.com/watch?v=1"), "YouTube.com");
         assert_eq!(host("https://user@cdn.example.org:8080/x"), "cdn.example.org");
         assert_eq!(percent_decode("my%20file%2B1.zip"), "my file+1.zip");
+        assert_eq!(percent_decode("a+b.zip"), "a+b.zip");
     }
 
     #[test]
@@ -276,6 +296,8 @@ mod tests {
         std::fs::write(dir.join("a (2).txt.part"), "x").unwrap();
         assert_eq!(unique_path(&dir, "a.txt"), dir.join("a (3).txt"));
         assert_eq!(unique_path(&dir, "b.txt"), dir.join("b.txt"));
+        let reserved = dir.join("b.txt");
+        assert_eq!(unique_path_except(&dir, "b.txt", &[&reserved]), dir.join("b (2).txt"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -275,11 +275,20 @@ pub fn install(file: &Path) -> Result<()> {
         #[cfg(windows)]
         Kind::Setup => {
             use std::os::windows::process::CommandExt;
-            // DETACHED_PROCESS: the setup outlives the app it replaces.
+            // The silent setup ends a running app at once; this one first
+            // pauses its downloads and saves the list (`on_exit`). So the
+            // setup starts only once this process has exited, from a hidden
+            // waiter that outlives it.
             const DETACHED_PROCESS: u32 = 0x0000_0008;
-            std::process::Command::new(file)
-                .args(["/S", "/R"])
-                .creation_flags(DETACHED_PROCESS)
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let setup = file.display().to_string().replace('\'', "''");
+            let script = format!(
+                "Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process -FilePath '{setup}' -ArgumentList '/S','/R'",
+                std::process::id()
+            );
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+                .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
                 .spawn()
                 .context("could not start the setup")?;
             Ok(())
@@ -419,7 +428,12 @@ impl Updater {
                     match result.and_then(|file| install(&file)) {
                         Ok(()) => return true,
                         Err(_) if cancelled => {}
-                        Err(e) => self.error = Some(format!("The update could not be installed: {e:#}")),
+                        Err(e) => {
+                            self.error = Some(trlf(
+                                "The update could not be installed: {error}",
+                                &[("error", &i18n::engine(&format!("{e:#}")))],
+                            ))
+                        }
                     }
                 }
             }
@@ -466,7 +480,7 @@ impl Updater {
             } else if let Some(e) = &self.error
                 && !self.dialog
             {
-                ui.label(RichText::new(e).color(p.danger));
+                theme::paragraph(ui, e, 14.5, p.danger);
             }
         });
     }

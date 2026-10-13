@@ -31,6 +31,8 @@ const CHUNK: usize = 256 * 1024;
 const REQUEST_SPAN: Duration = Duration::from_secs(60);
 /// Attempts in a row without any progress before a connection gives up.
 const MAX_FAILURES: u32 = 6;
+/// A server that sends nothing for this long is given up on.
+const STALL: Duration = Duration::from_secs(60);
 
 fn agent(body_timeout: Option<Duration>) -> ureq::Agent {
     ureq::Agent::config_builder()
@@ -56,6 +58,8 @@ pub struct Probe {
     /// Whether the server allows byte ranges: several connections and resuming.
     pub resumable: bool,
     pub content_type: String,
+    /// `ETag` or `Last-Modified`: changes when the file on the server does.
+    pub validator: Option<String>,
 }
 
 impl Probe {
@@ -86,13 +90,15 @@ pub fn probe(url: &str) -> Result<Probe> {
     } else {
         (header("content-length").and_then(|l| l.trim().parse().ok()), false)
     };
+    let validator = header("etag").or_else(|| header("last-modified"));
     let name = header("content-disposition")
         .and_then(|cd| filename_from_disposition(&cd))
         .or_else(|| filename_from_url(&final_url))
         .or_else(|| filename_from_url(url))
         .unwrap_or_else(|| "download".into());
     let name = with_extension_for(&sanitize_filename(&name), &content_type);
-    Ok(Probe { url: final_url, name, size, resumable: resumable && size.is_some_and(|s| s > 0), content_type })
+    let resumable = resumable && size.is_some_and(|s| s > 0);
+    Ok(Probe { url: final_url, name, size, resumable, content_type, validator })
 }
 
 /// Saved state of an unfinished ranged download.
@@ -101,6 +107,9 @@ pub struct Resume {
     pub size: u64,
     /// `[start, next byte to write, end (inclusive)]`.
     pub segments: Vec<[u64; 3]>,
+    /// The server's `ETag` or `Last-Modified` when the download began.
+    #[serde(default)]
+    pub validator: Option<String>,
 }
 
 impl Resume {
@@ -126,6 +135,15 @@ impl Limiter {
         self.rate.load(Ordering::Relaxed)
     }
 
+    /// How many bytes to read at a time: small enough that a slow limit is
+    /// kept smoothly by many short waits rather than a few long ones.
+    pub fn chunk(&self) -> usize {
+        match self.rate() {
+            0 => CHUNK,
+            r => ((r / 4) as usize).clamp(4096, CHUNK),
+        }
+    }
+
     /// Waits as long as needed to stay under the limit after `n` more bytes.
     pub fn take(&self, n: usize) {
         let rate = self.rate() as f64;
@@ -142,7 +160,9 @@ impl Limiter {
             if *tokens < 0.0 { -*tokens / rate } else { 0.0 }
         };
         if wait > 0.0 {
-            std::thread::sleep(Duration::from_secs_f64(wait.min(5.0)));
+            // Reads of at most `chunk()` keep this short; the bound only
+            // guards against a limit lowered mid-download.
+            std::thread::sleep(Duration::from_secs_f64(wait.min(30.0)));
         }
     }
 }
@@ -193,13 +213,21 @@ pub fn download(
     limiter: &Limiter,
     report: &dyn Report,
 ) -> std::result::Result<Outcome, Failure> {
-    let probe = probe(job.url)?;
+    // Failures before any data arrives keep the earlier resume point.
+    let keep = |error: anyhow::Error| Failure { error, resume: job.resume.clone() };
+    let probe = probe(job.url).map_err(keep)?;
+    if stop.load(Ordering::Relaxed) {
+        return Ok(Outcome::Stopped(job.resume));
+    }
     if let Some(dir) = job.path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display())).map_err(keep)?;
     }
     let part = part_path(job.path);
     let outcome = match probe.size.filter(|_| probe.resumable) {
-        Some(size) => ranged(&probe.url, &part, size, job.connections.clamp(1, 32), job.resume, stop, limiter, report)?,
+        Some(size) => {
+            let target = Target { url: &probe.url, part: &part, size, validator: probe.validator.clone() };
+            ranged(target, job.connections.clamp(1, 32), job.resume, stop, limiter, report)?
+        }
         None => single(&probe.url, &part, probe.size, stop, limiter, report)?,
     };
     if let Step::Stopped(resume) = outcome {
@@ -231,31 +259,65 @@ fn single(
     limiter: &Limiter,
     report: &dyn Report,
 ) -> std::result::Result<Step, Failure> {
-    let mut resp = agent(None).get(url).call().map_err(net_error)?;
+    // Bounded so that a reader thread left behind (see below) ends some day.
+    let resp = agent(Some(Duration::from_secs(6 * 3600))).get(url).call().map_err(net_error)?;
     let status = resp.status().as_u16();
     if status >= 400 {
         return Err(anyhow!("{}", status_message(status)).into());
     }
     let mut file = File::create(part).with_context(|| format!("cannot write {}", part.display()))?;
-    let mut body = resp.body_mut().as_reader();
-    let mut buf = vec![0; CHUNK];
+    // The body is read on its own thread: a server that stalls would
+    // otherwise block a read, and with it pausing and quitting.
+    let mut reader = resp.into_body().into_reader();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(8);
+    std::thread::spawn(move || {
+        loop {
+            let mut buf = vec![0; CHUNK];
+            let piece = reader.read(&mut buf).map(|n| {
+                buf.truncate(n);
+                buf
+            });
+            let end = !matches!(&piece, Ok(b) if !b.is_empty());
+            // A closed channel: the download was stopped.
+            if tx.send(piece).is_err() || end {
+                return;
+            }
+        }
+    });
     let mut done = 0u64;
-    let mut last = Instant::now();
+    let mut last_report = Instant::now();
+    let mut last_data = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
             return Ok(Step::Stopped(None));
         }
-        let n = body.read(&mut buf).map_err(|e| anyhow!("the connection was lost ({e})"))?;
-        if n == 0 {
-            break;
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(Ok(data)) if data.is_empty() => break,
+            Ok(Ok(data)) => {
+                for piece in data.chunks(limiter.chunk()) {
+                    limiter.take(piece.len());
+                }
+                std::io::Write::write_all(&mut file, &data).context("could not write the file (is the disk full?)")?;
+                done += data.len() as u64;
+                last_data = Instant::now();
+            }
+            Ok(Err(e)) => return Err(anyhow!("the connection was lost ({e})").into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if last_data.elapsed() > STALL {
+                    return Err(anyhow!("the server stopped sending data").into());
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!("the connection was lost ({})", "closed").into());
+            }
         }
-        limiter.take(n);
-        std::io::Write::write_all(&mut file, &buf[..n]).context("could not write the file (is the disk full?)")?;
-        done += n as u64;
-        if last.elapsed() >= Duration::from_millis(250) {
+        if last_report.elapsed() >= Duration::from_millis(250) {
             report.progress(done, size);
-            last = Instant::now();
+            last_report = Instant::now();
         }
+    }
+    if size.is_some_and(|s| s != done) {
+        return Err(anyhow!("the download ended before the file was complete").into());
     }
     file.sync_all().ok();
     report.progress(done, Some(done));
@@ -284,6 +346,7 @@ struct Shared<'a> {
     stop: &'a AtomicBool,
     failure: Mutex<Option<anyhow::Error>>,
     limiter: &'a Limiter,
+    validator: Option<String>,
 }
 
 impl Shared<'_> {
@@ -296,7 +359,8 @@ impl Shared<'_> {
     }
 
     fn snapshot(&self, size: u64) -> Resume {
-        Resume { size, segments: self.segs().iter().map(|s| [s.start, s.pos, s.end]).collect() }
+        let segments = self.segs().iter().map(|s| [s.start, s.pos, s.end]).collect();
+        Resume { size, segments, validator: self.validator.clone() }
     }
 
     /// A segment for a free connection: an untaken one, or the second half
@@ -346,25 +410,29 @@ impl Shared<'_> {
             if pos > end || self.halted() {
                 return Ok(());
             }
-            match self.request(&agent, i, pos, end, buf) {
-                Ok(progressed) => {
-                    if progressed {
-                        failures = 0;
-                    }
+            let result = self.request(&agent, i, pos, end, buf);
+            if self.halted() {
+                return Ok(());
+            }
+            let e = match result {
+                Ok(true) => {
+                    failures = 0;
+                    continue;
                 }
-                Err(e) => {
-                    let fatal = e.downcast_ref::<Fatal>().is_some();
-                    failures += 1;
-                    if fatal || failures >= MAX_FAILURES {
-                        return Err(e);
-                    }
-                    log::info!("connection retry {failures}: {e:#}");
-                    // Wait a little longer each time, but react to a stop.
-                    let until = Instant::now() + Duration::from_secs(1 << failures.min(4));
-                    while Instant::now() < until && !self.halted() {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                }
+                // Answered, but with nothing: as bad as no answer.
+                Ok(false) => anyhow!("the server sent no data"),
+                Err(e) => e,
+            };
+            let fatal = e.downcast_ref::<Fatal>().is_some();
+            failures += 1;
+            if fatal || failures >= MAX_FAILURES {
+                return Err(e);
+            }
+            log::info!("connection retry {failures}: {e:#}");
+            // Wait a little longer each time, but react to a stop.
+            let until = Instant::now() + Duration::from_secs(1 << failures.min(4));
+            while Instant::now() < until && !self.halted() {
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
     }
@@ -379,6 +447,17 @@ impl Shared<'_> {
             s @ (401 | 403 | 404 | 410) => return Err(Fatal(status_message(s)).into()),
             s => bail!("{}", status_message(s)),
         }
+        // The part asked for, not another one.
+        let start = resp
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().strip_prefix("bytes ")?.split('-').next()?.trim().parse::<u64>().ok());
+        if start != Some(pos) {
+            return Err(Fatal("the server sent the wrong part of the file".into()).into());
+        }
+        let chunk = self.limiter.chunk().min(buf.len());
+        let buf = &mut buf[..chunk];
         let mut body = resp.body_mut().as_reader();
         let mut progressed = false;
         loop {
@@ -422,32 +501,48 @@ impl std::fmt::Display for Fatal {
 
 impl std::error::Error for Fatal {}
 
-/// Several connections over byte ranges.
-#[allow(clippy::too_many_arguments)]
-fn ranged(
-    url: &str,
-    part: &Path,
+/// The file of a ranged download.
+struct Target<'a> {
+    url: &'a str,
+    part: &'a Path,
     size: u64,
+    validator: Option<String>,
+}
+
+/// Several connections over byte ranges.
+fn ranged(
+    target: Target,
     connections: usize,
     resume: Option<Resume>,
     stop: &AtomicBool,
     limiter: &Limiter,
     report: &dyn Report,
 ) -> std::result::Result<Step, Failure> {
+    let Target { url, part, size, validator } = target;
+    let keep = |error: anyhow::Error| Failure { error, resume: resume.clone() };
     // An earlier attempt is only continued if its file is still there and
-    // the size on the server has not changed.
-    let earlier = resume
-        .filter(|r| r.size == size && !r.segments.is_empty() && std::fs::metadata(part).is_ok_and(|m| m.len() == size));
+    // the file on the server has not changed.
+    let unchanged = |r: &Resume| match (&r.validator, &validator) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    };
+    let earlier = resume.clone().filter(|r| {
+        r.size == size
+            && unchanged(r)
+            && !r.segments.is_empty()
+            && std::fs::metadata(part).is_ok_and(|m| m.len() == size)
+    });
     let file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(earlier.is_none())
         .open(part)
-        .with_context(|| format!("cannot write {}", part.display()))?;
+        .with_context(|| format!("cannot write {}", part.display()))
+        .map_err(keep)?;
     let segs = match earlier {
         Some(r) => r.segments.iter().map(|&[start, pos, end]| Seg { start, pos, end, taken: false }).collect(),
         None => {
-            file.set_len(size).context("not enough disk space for this file")?;
+            file.set_len(size).context("not enough disk space for this file").map_err(keep)?;
             initial_segments(size, connections)
         }
     };
@@ -459,6 +554,7 @@ fn ranged(
         stop,
         failure: Mutex::new(None),
         limiter,
+        validator,
     };
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..connections).map(|_| scope.spawn(|| shared.connection())).collect();
@@ -656,6 +752,7 @@ mod tests {
             stop: &stop,
             failure: Mutex::new(None),
             limiter: &limiter,
+            validator: None,
         };
         assert_eq!(shared.claim(), Some(0));
         // The only segment is taken: the next connection splits it in half.
@@ -668,7 +765,7 @@ mod tests {
 
     #[test]
     fn resume_counts_written_bytes() {
-        let r = Resume { size: 300, segments: vec![[0, 50, 99], [100, 200, 199], [200, 250, 299]] };
+        let r = Resume { size: 300, segments: vec![[0, 50, 99], [100, 200, 199], [200, 250, 299]], validator: None };
         assert_eq!(r.done(), 50 + 100 + 50);
     }
 

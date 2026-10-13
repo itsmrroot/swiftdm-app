@@ -221,11 +221,28 @@ pub const ENGINE: &[&str] = &[
     "not enough disk space for this file",
     "the server stopped allowing resumed downloads",
     "the download ended before the file was complete",
+    "the server stopped sending data",
+    "the server sent no data",
+    "the server sent the wrong part of the file",
     "cannot write {…}",
     "cannot create {…}",
     "cannot move the file to {…}",
     // tools.rs
     "could not reach GitHub",
+    "could not download {…}",
+    "cannot install {…}",
+    "{…} is not available",
+    "{…} is missing from the archive",
+    "the archive is damaged",
+    "cannot remove {…}",
+    // update.rs (the app's own updates)
+    "no installer for this system",
+    "this copy of the app has to be updated by hand",
+    "no permission to replace {…}",
+    "could not start the setup",
+    "could not start the installer",
+    "could not download the update",
+    "unexpected app location",
     "unexpected answer from GitHub",
     "the download was interrupted",
     "the download is incomplete",
@@ -582,6 +599,7 @@ mod tests {
             include_str!("../../src/manager.rs"),
             include_str!("../../src/http.rs"),
             include_str!("../../src/tools.rs"),
+            include_str!("update.rs"),
         ]
         .concat();
         for pattern in ENGINE {
