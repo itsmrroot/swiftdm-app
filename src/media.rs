@@ -73,6 +73,9 @@ pub enum ErrorKind {
     NoYtDlp,
     /// The site wants a logged-in user.
     Login,
+    /// The login of the chosen browser could not be read (not installed,
+    /// no permission, locked while the browser runs).
+    Cookies,
     /// The site refused (often fixed by a login or a yt-dlp update).
     Forbidden,
     /// yt-dlp does not know this link: it may be a plain file.
@@ -104,7 +107,7 @@ pub fn classify(stderr: &str) -> MediaError {
         .lines()
         .rev()
         .find(|l| l.starts_with("ERROR:"))
-        .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+        .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty() && !l.starts_with("WARNING:")))
         .unwrap_or("yt-dlp stopped without saying why")
         .trim_start_matches("ERROR:")
         .trim();
@@ -115,15 +118,34 @@ pub fn classify(stderr: &str) -> MediaError {
     };
     let detail =
         detail.split_once(": ").filter(|(id, _)| !id.contains(' ') && id.len() < 40).map_or(detail, |(_, m)| m);
-    let low = stderr.to_lowercase();
+    // The error decides; warnings only tell about a missing JavaScript runtime.
+    let low = error.to_lowercase();
+    let warnings = stderr.to_lowercase();
+    let cookie_trouble = (low.contains("cookie")
+        && (low.contains("database")
+            || low.contains("could not copy")
+            || low.contains("decrypt")
+            || low.contains("keyring")
+            || low.contains("binarycookies")
+            || low.contains("not permitted")))
+        || low.contains("unsupported browser");
     let (kind, message) = if low.contains("unsupported url") {
         (ErrorKind::Unsupported, "This link has no video or music SwiftDM can read.".to_string())
-    } else if low.contains("javascript runtime") || low.contains("js runtime") || low.contains("jsc challenge") {
+    } else if cookie_trouble {
+        (
+            ErrorKind::Cookies,
+            "The login of the chosen browser could not be read. Choose another browser in Settings, or none."
+                .to_string(),
+        )
+    } else if warnings.contains("javascript runtime")
+        || warnings.contains("js runtime")
+        || warnings.contains("challenge solving failed")
+    {
         (ErrorKind::NeedsJs, "YouTube needs Deno: install it in Settings → Helpers.".to_string())
     } else if low.contains("sign in")
         || low.contains("login required")
         || low.contains("log in")
-        || low.contains("cookies")
+        || low.contains("--cookies")
         || low.contains("rate-limit reached")
     {
         (
@@ -134,6 +156,7 @@ pub fn classify(stderr: &str) -> MediaError {
         (ErrorKind::NeedsFfmpeg, "This needs FFmpeg: install it in Settings → Helpers.".to_string())
     } else if low.contains("private video")
         || low.contains("video unavailable")
+        || low.contains("video is unavailable")
         || low.contains("has been removed")
         || low.contains("not available in your country")
         || low.contains("geo restrict")
@@ -151,9 +174,23 @@ pub fn classify(stderr: &str) -> MediaError {
     MediaError { kind, message }
 }
 
+/// The step a `[sdm-pp]` line announces, if it starts one.
+fn postprocess_stage(line: &str) -> Option<&'static str> {
+    let rest = line.strip_prefix("[sdm-pp] ")?;
+    let (status, pp) = rest.split_once('|').unwrap_or((rest, ""));
+    (status == "started").then_some(match pp {
+        "Merger" => "Joining video and sound",
+        "ExtractAudio" => "Converting to MP3",
+        "EmbedThumbnail" => "Adding the cover",
+        "Metadata" | "FFmpegMetadata" => "Adding details",
+        _ => "Finishing",
+    })
+}
+
 fn base_command(ytdlp: &Path) -> std::process::Command {
     let mut cmd = tools::command(ytdlp);
-    cmd.args(["--ignore-config", "--no-warnings", "--color", "never", "--no-playlist"])
+    // Warnings stay on: a missing JavaScript runtime is only a warning.
+    cmd.args(["--ignore-config", "--color", "never", "--no-playlist"])
         // Titles in any language, also on Windows.
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
@@ -182,7 +219,8 @@ pub fn inspect(url: &str, cookies_from: Option<&str>, stop: &AtomicBool) -> std:
         cmd.args(["--cookies-from-browser", b]);
     }
     cmd.arg("--").arg(url);
-    let (status, stdout, stderr) = run_collect(cmd, stop, Duration::from_secs(120))
+    // Big channels take a while to list.
+    let (status, stdout, stderr) = run_collect(cmd, stop, Duration::from_secs(300))
         .map_err(|e| MediaError { kind: ErrorKind::Other, message: format!("{e:#}") })?;
     if !status {
         return Err(classify(&stderr));
@@ -203,7 +241,10 @@ fn parse_info(v: &Value) -> Found {
                     .filter_map(|e| {
                         let url = e.get("url").or_else(|| e.get("webpage_url")).and_then(Value::as_str)?;
                         Some(Entry {
-                            title: e.get("title").and_then(Value::as_str).unwrap_or(url).to_string(),
+                            title: e
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .map_or_else(|| title_from_url(url), str::to_string),
                             url: url.to_string(),
                             duration: e.get("duration").and_then(Value::as_f64),
                         })
@@ -255,6 +296,13 @@ fn parse_info(v: &Value) -> Found {
     })
 }
 
+/// A readable name from a link's last part ("paradigm-shift" → "paradigm shift").
+fn title_from_url(url: &str) -> String {
+    let last = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/').rsplit('/').next().unwrap_or(url);
+    let name = crate::util::percent_decode(last).replace(['-', '_'], " ");
+    if name.trim().is_empty() { url.to_string() } else { name }
+}
+
 /// What a running download reports.
 pub trait Report: Sync {
     fn progress(&self, done: u64, total: Option<u64>, speed: Option<f64>, eta: Option<u64>);
@@ -293,7 +341,9 @@ fn download_args(job: &Job, has_ffmpeg: bool) -> Vec<String> {
         "-P".into(),
         job.dir.display().to_string(),
         "-o".into(),
-        "%(title).150B.%(ext)s".into(),
+        // With the id: different posts often share a title ("Video by …"),
+        // and yt-dlp would take an existing file for this one.
+        "%(title).150B [%(id)s].%(ext)s".into(),
         "-N".into(),
         job.fragments.clamp(1, 16).to_string(),
     ];
@@ -385,17 +435,8 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
                         (None, t) => t.map(|t| base + t),
                     };
                     report.progress(base + p.done, total, p.speed, p.eta);
-                } else if let Some(rest) = line.strip_prefix("[sdm-pp] ") {
-                    let (status, pp) = rest.split_once('|').unwrap_or((rest, ""));
-                    if status == "started" {
-                        report.stage(match pp {
-                            "Merger" => "Joining video and sound",
-                            "ExtractAudio" => "Converting to MP3",
-                            "EmbedThumbnail" => "Adding the cover",
-                            "Metadata" | "FFmpegMetadata" => "Adding details",
-                            _ => "Finishing",
-                        });
-                    }
+                } else if let Some(stage) = postprocess_stage(&line) {
+                    report.stage(stage);
                 } else if let Some(size) = line.strip_prefix("[sdm-size] ") {
                     overall = size.trim().parse::<f64>().ok().map(|v| v as u64).filter(|v| *v > 0);
                 } else if let Some(title) = line.strip_prefix("[sdm-title] ") {
@@ -408,6 +449,13 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
         let errors = errors.clone();
         scope.spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+                // In quiet mode (implied by --print) yt-dlp writes these here.
+                if line.starts_with("[sdm-pp] ") {
+                    if let Some(stage) = postprocess_stage(&line) {
+                        report.stage(stage);
+                    }
+                    continue;
+                }
                 let mut e = errors.lock().unwrap_or_else(|e| e.into_inner());
                 if e.len() < 64 * 1024 {
                     e.push_str(&line);
@@ -626,6 +674,19 @@ mod tests {
         assert_eq!(e.kind, ErrorKind::Login);
         let e = classify("ERROR: [vimeo] 123: Video unavailable\n");
         assert_eq!(e.kind, ErrorKind::Unavailable);
+        let e = classify("ERROR: could not find opera cookies database in \"/x\"\n");
+        assert_eq!(e.kind, ErrorKind::Cookies);
+        let e = classify("ERROR: Could not copy Chrome cookie database. See …\n");
+        assert_eq!(e.kind, ErrorKind::Cookies);
+        let e = classify(
+            "WARNING: [youtube] No supported JavaScript runtime could be found\nERROR: Requested format is not available\n",
+        );
+        assert_eq!(e.kind, ErrorKind::NeedsJs);
+        let e = classify("ERROR: [youtube] x: This video is unavailable\n");
+        assert_eq!(e.kind, ErrorKind::Unavailable);
+        assert_eq!(postprocess_stage("[sdm-pp] started|ExtractAudio"), Some("Converting to MP3"));
+        assert_eq!(postprocess_stage("[sdm-pp] finished|ExtractAudio"), None);
+        assert_eq!(title_from_url("https://soundcloud.com/forss/paradigm-shift"), "paradigm shift");
         let e = classify("ERROR: [generic] something odd happened\n");
         assert_eq!(e.kind, ErrorKind::Other);
         assert_eq!(e.message, "something odd happened");
@@ -658,7 +719,7 @@ mod tests {
         )
         .unwrap();
         let Found::Playlist { title, entries } = parse_info(&v) else { panic!() };
-        assert_eq!((title.as_str(), entries.len(), entries[1].title.as_str()), ("P", 2, "https://y/2"));
+        assert_eq!((title.as_str(), entries.len(), entries[1].title.as_str()), ("P", 2, "2"));
     }
 
     #[test]

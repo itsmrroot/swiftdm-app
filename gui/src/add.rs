@@ -97,7 +97,11 @@ fn look(url: &str, s: &manager::Settings, stop: &AtomicBool) -> std::result::Res
         }
         match media::inspect(url, cookies, stop) {
             Ok(found) => return Ok(Looked::Media(found)),
-            Err(e) if matches!(e.kind, ErrorKind::Login | ErrorKind::Forbidden) => last = Some(e),
+            Err(e) if matches!(e.kind, ErrorKind::Login | ErrorKind::Forbidden) => {
+                last.get_or_insert(e);
+            }
+            // This browser's login cannot be read: the next one may do.
+            Err(e) if e.kind == ErrorKind::Cookies && last.is_some() => {}
             Err(e) if e.kind == ErrorKind::Unsupported => {
                 // A page without a video: perhaps still worth saving.
                 return http::probe(url).map(Looked::File).map_err(|_| LookError {

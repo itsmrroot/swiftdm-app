@@ -309,6 +309,10 @@ pub const ARABIC: &[(&str, &str)] = &[
     ("{n} links", "{n} روابط"),
     ("It is here:", "موجود هنا:"),
     ("Copy", "نسخ"),
+    (
+        "The login of the chosen browser could not be read. Choose another browser in Settings, or none.",
+        "تعذّرت قراءة تسجيل الدخول في المتصفح المختار. اختر متصفحًا آخر في الإعدادات، أو لا شيء.",
+    ),
     ("cannot write {…}", "تعذّرت الكتابة في {…}"),
     ("cannot create {…}", "تعذّر إنشاء {…}"),
     ("cannot move the file to {…}", "تعذّر نقل الملف إلى {…}"),
@@ -657,6 +661,10 @@ pub const GERMAN: &[(&str, &str)] = &[
     ("{n} links", "{n} Links"),
     ("It is here:", "Er liegt hier:"),
     ("Copy", "Kopieren"),
+    (
+        "The login of the chosen browser could not be read. Choose another browser in Settings, or none.",
+        "Die Anmeldung des gewählten Browsers konnte nicht gelesen werden. Wählen Sie in den Einstellungen einen anderen Browser oder keinen.",
+    ),
     ("cannot write {…}", "{…} kann nicht geschrieben werden"),
     ("cannot create {…}", "{…} kann nicht erstellt werden"),
     ("cannot move the file to {…}", "die Datei kann nicht nach {…} verschoben werden"),
@@ -990,6 +998,10 @@ pub const TURKISH: &[(&str, &str)] = &[
     ("{n} links", "{n} bağlantı"),
     ("It is here:", "Burada:"),
     ("Copy", "Kopyala"),
+    (
+        "The login of the chosen browser could not be read. Choose another browser in Settings, or none.",
+        "Seçilen tarayıcının oturumu okunamadı. Ayarlar'da başka bir tarayıcı seçin ya da hiçbirini seçmeyin.",
+    ),
     ("cannot write {…}", "{…} yazılamıyor"),
     ("cannot create {…}", "{…} oluşturulamıyor"),
     ("cannot move the file to {…}", "dosya {…} konumuna taşınamıyor"),

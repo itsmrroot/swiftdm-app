@@ -51,7 +51,7 @@ impl Tool {
     pub fn download_size(self) -> &'static str {
         match self {
             Tool::YtDlp => "20–40 MB",
-            Tool::Ffmpeg => "30–130 MB",
+            Tool::Ffmpeg => "60–200 MB",
             Tool::Deno => "40–50 MB",
         }
     }
@@ -236,8 +236,26 @@ fn agent() -> ureq::Agent {
         .user_agent(format!("SwiftDM/{}", env!("CARGO_PKG_VERSION")))
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
+        // A stalled download ends some day (cancelling is checked between reads).
+        .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
         .build()
         .into()
+}
+
+/// Where `url` leads after redirects.
+fn resolve(url: &str) -> Result<String> {
+    use ureq::ResponseExt;
+    let resp =
+        agent().get(url).header("Range", "bytes=0-0").call().with_context(|| format!("could not download {url}"))?;
+    Ok(resp.get_uri().to_string())
+}
+
+/// The SHA-256 published next to `url` as `<url>.sha256`, if there is one.
+fn published_sha256(url: &str) -> Option<String> {
+    let text =
+        agent().get(format!("{url}.sha256")).call().ok()?.body_mut().with_config().limit(4096).read_to_string().ok()?;
+    let hex = text.split_whitespace().next()?.to_ascii_lowercase();
+    (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex)
 }
 
 fn github_release(repo: &str, tag: Option<&str>) -> Result<GhRelease> {
@@ -394,9 +412,12 @@ fn install_ffmpeg(work: &Path, progress: OnProgress, stop: &AtomicBool) -> Resul
         // Static builds by Martin Riedl, one archive per program.
         let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" };
         for name in ["ffprobe", "ffmpeg"] {
-            let url = format!("https://ffmpeg.martin-riedl.de/redirect/latest/macos/{arch}/release/{name}.zip");
+            let link = format!("https://ffmpeg.martin-riedl.de/redirect/latest/macos/{arch}/release/{name}.zip");
+            // The build's own address, next to which its checksum is published.
+            let url = resolve(&link)?;
+            let sha = published_sha256(&url);
             let zip = work.join(format!("{name}.zip"));
-            fetch(&url, &zip, None, None, progress, stop)?;
+            fetch(&url, &zip, None, sha.as_deref(), progress, stop)?;
             let tmp = work.join(name);
             unzip_one(&zip, name, &tmp)?;
             put_in_place(&tmp, &dir.join(name))?;

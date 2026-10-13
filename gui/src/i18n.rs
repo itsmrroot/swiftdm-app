@@ -189,6 +189,7 @@ pub const ENGINE: &[&str] = &[
     "YouTube needs Deno: install it in Settings → Helpers.",
     "The site wants you to be logged in. In Settings, choose the browser you are logged in with.",
     "This needs FFmpeg: install it in Settings → Helpers.",
+    "The login of the chosen browser could not be read. Choose another browser in Settings, or none.",
     "Not available: {…}",
     "The site refused the download (HTTP 403). Updating yt-dlp or logging in usually helps.",
     "yt-dlp is not installed: install it in Settings → Helpers.",

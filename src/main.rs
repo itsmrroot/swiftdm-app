@@ -222,9 +222,20 @@ fn get(args: Get) -> Result<()> {
     let multi = MultiProgress::new();
     let mut bars = Vec::new();
     for (url, source) in args.urls.iter().zip(sources) {
-        let id = manager.add(url, source, None, &dir, None);
-        let pb = multi.add(ProgressBar::new(1000).with_style(bar_style()));
-        bars.push((id, pb));
+        // A playlist or channel becomes one download per item.
+        let mut links = vec![(url.clone(), None)];
+        if matches!(source, Source::Media(_)) {
+            let stop = AtomicBool::new(false);
+            if let Ok(Found::Playlist { title, entries }) = media::inspect(url, args.cookies.as_deref(), &stop) {
+                eprintln!("{title}: {} items", entries.len());
+                links = entries.into_iter().map(|e| (e.url, Some(e.title))).collect();
+            }
+        }
+        for (link, title) in links {
+            let id = manager.add(&link, source.clone(), title, &dir, None);
+            let pb = multi.add(ProgressBar::new(1000).with_style(bar_style()));
+            bars.push((id, pb));
+        }
     }
     loop {
         let mut running = false;
@@ -285,8 +296,10 @@ fn get(args: Get) -> Result<()> {
 }
 
 fn info(url: &str, cookies: Option<&str>) -> Result<()> {
+    // Reading a link needs only yt-dlp.
     if tools::find(Tool::YtDlp).is_none() {
-        ensure_helpers(false, false)?;
+        eprintln!("yt-dlp is needed to read video sites; installing it…");
+        install_tool(Tool::YtDlp)?;
     }
     let stop = AtomicBool::new(false);
     match media::inspect(url, cookies, &stop) {

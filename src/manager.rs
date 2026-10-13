@@ -647,12 +647,15 @@ impl Manager {
             if settings.auto_cookies && options.cookies_from.is_none() { browsers().to_vec() } else { Vec::new() };
         fallbacks.reverse();
         let report = Progress::new(self.inner.clone(), id);
+        let mut site_error: Option<media::MediaError> = None;
         loop {
             let job = media::Job {
                 url: &item.url,
                 dir: &item.dir,
                 options: &options,
-                rate_limit: settings.speed_limit,
+                // Each yt-dlp limits itself: share the limit between the
+                // downloads that may run at once.
+                rate_limit: settings.speed_limit / settings.max_active.max(1) as u64,
                 fragments: settings.connections.min(8),
             };
             match media::download(job, stop, &report) {
@@ -677,12 +680,24 @@ impl Manager {
                     });
                     return self.run_file(id, stop);
                 }
-                Err(e) if matches!(e.kind, ErrorKind::Login | ErrorKind::Forbidden) && !fallbacks.is_empty() => {
+                // The site refused: try the next browser's login. A browser
+                // whose login cannot be read (not installed, locked) is
+                // skipped the same way.
+                Err(e)
+                    if matches!(e.kind, ErrorKind::Login | ErrorKind::Forbidden | ErrorKind::Cookies)
+                        && !fallbacks.is_empty()
+                        && (e.kind != ErrorKind::Cookies || site_error.is_some()) =>
+                {
+                    if e.kind != ErrorKind::Cookies && site_error.is_none() {
+                        site_error = Some(e);
+                    }
                     let browser = fallbacks.pop().expect("not empty");
                     options.cookies_from = Some(browser.to_string());
                     self.inner.update(id, |i| i.stage = Some(format!("Trying with your {browser} login")));
                 }
-                Err(e) => return self.fail(id, e.message),
+                // Out of browsers: what the site said matters, not that
+                // the last browser's login was unreadable.
+                Err(e) => return self.fail(id, site_error.unwrap_or(e).message),
             }
         }
     }
