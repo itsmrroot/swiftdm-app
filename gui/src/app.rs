@@ -137,6 +137,8 @@ pub struct App {
     browser_checked: Instant,
     /// SHA-256 of finished files being computed (to copy).
     hashing: Vec<(String, Job<String>)>,
+    /// The window was fitted to the screen.
+    fitted: bool,
 }
 
 impl App {
@@ -216,6 +218,7 @@ impl App {
             browser_seen: None,
             browser_checked: Instant::now() - Duration::from_secs(60),
             hashing: Vec::new(),
+            fitted: false,
         };
         // Development aid: open a page for screenshots.
         #[cfg(debug_assertions)]
@@ -548,6 +551,32 @@ impl App {
         }
     }
 
+    /// Once the screen is known: a window that fits it (at most 88% of it),
+    /// centred and not maximized — on small screens some systems maximize a
+    /// window that is larger than the screen.
+    fn fit_to_screen(&mut self, ctx: &egui::Context) {
+        if self.fitted {
+            return;
+        }
+        let (monitor, outer) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().outer_rect));
+        let Some(monitor) = monitor.filter(|m| m.x > 100.0 && m.y > 100.0) else { return };
+        self.fitted = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+        let zoom = ctx.zoom_factor();
+        // In points (the window's size is in logical points, before zoom).
+        let want = Vec2::new(DEFAULT_SIZE[0].min(monitor.x * 0.88), DEFAULT_SIZE[1].min(monitor.y * 0.88))
+            .max(Vec2::new(MIN_SIZE[0], MIN_SIZE[1]).min(monitor * 0.95));
+        let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(want * zoom) / zoom;
+        if size.x > want.x + 1.0 || size.y > want.y + 1.0 {
+            log::info!("swiftdm: fitting the window into a {}×{} screen", monitor.x, monitor.y);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+            if let Some(outer) = outer {
+                let left_top = outer.min + (outer.size() - want) / 2.0;
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(left_top.max(egui::Pos2::ZERO)));
+            }
+        }
+    }
+
     /// Runs a command of the menu bar, a shortcut or a button.
     fn run(&mut self, ctx: &egui::Context, c: Command) {
         match c {
@@ -687,6 +716,62 @@ impl App {
                 if ui.add(chip(icon::QUESTION.to_string(), self.page == Page::Help)).on_hover_text(tr("Help")).clicked()
                 {
                     self.page = Page::Help;
+                }
+                // Quick settings: the ones changed now and then, without
+                // leaving the list.
+                let mut open_settings = false;
+                egui::containers::menu::MenuButton::from_button(chip(icon::SLIDERS_HORIZONTAL.to_string(), false))
+                    .ui(ui, |ui| {
+                        ui.set_min_width(300.0);
+                        let s = &mut self.settings;
+                        ui.label(theme::semibold(tr("Quick settings"), 14.5));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(tr("Download")).color(p.weak).size(12.5));
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut s.mode, swiftdm::media::Mode::Video, tr("Video"));
+                            ui.selectable_value(&mut s.mode, swiftdm::media::Mode::Audio, tr("Sound only"));
+                        });
+                        if s.mode == swiftdm::media::Mode::Video {
+                            ui.label(RichText::new(tr("Video quality")).color(p.weak).size(12.5));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.selectable_value(&mut s.max_height, None, tr("Best"));
+                                for h in [1080, 720, 480] {
+                                    ui.selectable_value(&mut s.max_height, Some(h), settings::height_label(Some(h)));
+                                }
+                            });
+                        }
+                        ui.separator();
+                        ui.checkbox(&mut s.ask_first, tr("Show the choices (quality, file name, folder)"));
+                        ui.checkbox(&mut s.watch_clipboard, tr("Offer to download links I copy"));
+                        ui.checkbox(&mut s.notify, tr("Show a notification of the system"));
+                        ui.checkbox(&mut s.keep_awake, tr("Keep the computer awake while downloading"));
+                        ui.checkbox(&mut s.sort_by_kind, tr("Sort into folders: Video, Music, Documents, Programs, …"));
+                        ui.separator();
+                        ui.label(RichText::new(tr("Save to")).color(p.weak).size(12.5));
+                        ui.add(
+                            egui::Label::new(RichText::new(s.download_dir.display().to_string()).size(12.5)).truncate(),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button(icon_label(icon::FOLDER_OPEN, "Change…")).clicked()
+                                && let Some(d) = rfd::FileDialog::new().set_directory(&s.download_dir).pick_folder()
+                            {
+                                s.download_dir = d;
+                            }
+                            if ui.button(tr("Open")).clicked() {
+                                let _ = std::fs::create_dir_all(&s.download_dir);
+                                let _ = swiftdm::util::open_path(&s.download_dir);
+                            }
+                        });
+                        ui.separator();
+                        if ui.button(icon_label(icon::GEAR_SIX, "All settings…")).clicked() {
+                            open_settings = true;
+                            ui.close();
+                        }
+                    })
+                    .0
+                    .on_hover_text(tr("Quick settings"));
+                if open_settings {
+                    self.page = Page::Settings;
                 }
                 // Language.
                 let lang = self.settings.language;
@@ -1235,8 +1320,22 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Runs every frame, also while the window is minimized or hidden.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Hand-overs from another start or the browser: taking them here
+        // confirms to the sender that this SwiftDM works (see instance.rs).
+        while let Some(links) = self.inbox.as_ref().and_then(Inbox::poll) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if !links.is_empty() {
+                self.add_requests(ctx, links);
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.fit_to_screen(&ctx);
         self.apply_settings(&ctx);
         self.helpers.poll(&ctx);
         self.thumbs.poll(&ctx);
@@ -1248,14 +1347,6 @@ impl eframe::App for App {
         let items = self.manager.items();
         self.watch_items(&ctx, &items, &p);
         self.watch_clipboard(&ctx, &p);
-        while let Some(links) = self.inbox.as_ref().and_then(Inbox::poll) {
-            // Another start of the app: show this window.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            if !links.is_empty() {
-                self.add_requests(&ctx, links);
-            }
-        }
 
         // Ctrl/Cmd+V outside a text field adds the link.
         let nothing_focused = ctx.memory(|m| m.focused().is_none());
@@ -1359,7 +1450,7 @@ impl eframe::App for App {
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Running downloads continue at the next start.
         self.manager.shutdown();
     }

@@ -113,9 +113,10 @@ ext.downloads.onCreated.addListener(async (item) => {
     return; // already finished (a tiny file)
   }
   let size = item.fileSize || item.totalBytes || 0;
-  const until = Date.now() + 1500;
+  // A short look at the size only: SwiftDM should come up at once.
+  const until = Date.now() + 400;
   while (size <= 0 && Date.now() < until) {
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 100));
     const [now] = await ext.downloads.search({ id: item.id });
     size = now?.totalBytes || now?.fileSize || 0;
   }
@@ -123,7 +124,8 @@ ext.downloads.onCreated.addListener(async (item) => {
     return ext.downloads.resume(item.id).catch(() => {});
   }
   const filename = (item.filename || "").split(/[\\/]/).pop();
-  const reply = await sendLink({ url, mode: "file", referer: item.referrer || "", filename, ask: false });
+  // SwiftDM comes to the front with its choices (name, folder) at once.
+  const reply = await sendLink({ url, mode: "file", referer: item.referrer || "", filename, ask: true });
   if (reply.ok) {
     await ext.downloads.cancel(item.id).catch(() => {});
     await ext.downloads.erase({ id: item.id }).catch(() => {});
@@ -186,11 +188,12 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
       case "send":
         return sendLink(msg);
       case "video": {
-        // The button on a video: the page itself, unless the video is a
-        // plain file on its own address.
+        // The button on a video: its own link as the page found it (on a
+        // feed, the post it is in), unless the video is a plain file.
         const page = sender.tab?.url || msg.pageUrl;
         const direct = usable(msg.src) && MEDIA_EXT.test(msg.src) && !/m3u8|mpd/i.test(msg.src);
-        return sendLink({ url: direct ? msg.src : page, mode: msg.mode || "video", referer: page });
+        const url = direct ? msg.src : usable(msg.url) ? msg.url : page;
+        return sendLink({ url, mode: msg.mode || "video", referer: page });
       }
       case "settings":
         return settings();

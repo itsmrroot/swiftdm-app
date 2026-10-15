@@ -12,7 +12,7 @@ build = "build.rs"
 anyhow = "1.0.104"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "wayland", "x11", "links"] }
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "glow", "persistence", "accesskit", "wayland", "x11", "links"] }
 dirs = "6.0.0"
 egui-phosphor = "0.14.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -40,7 +40,7 @@ winit = { version = "0.30", default-features = false }
 
 [target."cfg(windows)".dependencies]
 # Keeping the computer awake while downloading.
-windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_UI_WindowsAndMessaging"] }
 
 # Installers, built by `cargo packager --release -p swiftdm-gui` (see
 # .github/workflows/release.yml): Windows setup (NSIS), macOS .app/.dmg,

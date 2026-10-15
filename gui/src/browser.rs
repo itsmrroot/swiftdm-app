@@ -110,9 +110,13 @@ fn incoming(item: &Value, ask: Option<bool>) -> Option<Incoming> {
     })
 }
 
-/// Hands `items` to the running app, starting it if needed.
+/// Hands `items` to the running app, starting it if needed, and brings it
+/// to the front (systems keep apps in the background from doing that
+/// themselves; the helper, started by the browser in front, may).
 fn deliver(items: &[Incoming]) -> Value {
+    allow_to_front();
     if instance::send(items) {
+        to_front();
         return json!({ "ok": true });
     }
     if let Err(e) = start_app() {
@@ -125,6 +129,26 @@ fn deliver(items: &[Incoming]) -> Value {
         }
     }
     json!({ "ok": false, "error": "SwiftDM did not start" })
+}
+
+/// Lets the app take the focus from the browser (Windows).
+fn allow_to_front() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+        // SAFETY: no pointers; it only widens who may come to the front.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    }
+}
+
+/// Activates the running app (macOS: as if clicked in the Dock).
+fn to_front() {
+    #[cfg(target_os = "macos")]
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(app) = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app"))
+    {
+        let _ = Command::new("open").arg(app).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
 }
 
 /// Starts the app on its own, outside the browser's control (the browser

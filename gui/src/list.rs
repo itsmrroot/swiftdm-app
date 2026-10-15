@@ -82,66 +82,74 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
     let mut action = None;
     let kind = item.kind();
     let width = ui.available_width();
-    let resp = Frame::new()
-        .fill(p.card)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(width - 26.0);
-            ui.set_height(ROW_HEIGHT - 28.0);
-            ui.horizontal_centered(|ui| {
-                // Thumbnail or type icon.
-                let size = Vec2::new(84.0, 48.0);
-                let tex = item.thumbnail.as_deref().and_then(|u| thumbs.get(ui.ctx(), u));
-                match tex {
-                    Some(t) => {
-                        ui.add(egui::Image::new(&t).fit_to_exact_size(size).corner_radius(CornerRadius::same(6)));
-                    }
-                    None => {
-                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                        let c = kind_color(p, kind);
-                        ui.painter().rect_filled(rect, CornerRadius::same(8), p.tint(c));
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            kind_icon(kind),
-                            egui::FontId::proportional(24.0),
-                            c,
-                        );
-                    }
-                }
-                ui.add_space(4.0);
-                // Actions on the right, the text in between.
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    action = actions(ui, p, item).or(action);
-                    ui.add_space(8.0);
-                    ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.add(egui::Label::new(text::rich(item.display_name()).size(14.5).strong()).truncate());
-                        status_line(ui, p, item);
-                        if item.status != Status::Done {
-                            let color = match item.status {
-                                Status::Failed => p.danger,
-                                Status::Paused | Status::Queued => p.weak,
-                                _ => p.accent,
-                            };
-                            let fraction = if item.status == Status::Active && item.stage.is_some() {
-                                None
-                            } else {
-                                item.fraction()
-                            };
-                            let fraction =
-                                if item.status == Status::Active { fraction } else { fraction.or(Some(0.0)) };
-                            theme::bar(ui, p, fraction, color, ui.available_width());
+    // The row's own click area (double-click, right-click) is made before
+    // its contents, so that the buttons on it stay clickable.
+    let resp = ui
+        .scope_builder(egui::UiBuilder::new().id_salt(("row", item.id)).sense(Sense::click()), |ui| {
+            Frame::new()
+                .fill(p.card)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_width(width - 26.0);
+                    ui.set_height(ROW_HEIGHT - 28.0);
+                    ui.horizontal_centered(|ui| {
+                        // Thumbnail or type icon.
+                        let size = Vec2::new(84.0, 48.0);
+                        let tex = item.thumbnail.as_deref().and_then(|u| thumbs.get(ui.ctx(), u));
+                        match tex {
+                            Some(t) => {
+                                ui.add(
+                                    egui::Image::new(&t).fit_to_exact_size(size).corner_radius(CornerRadius::same(6)),
+                                );
+                            }
+                            None => {
+                                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                                let c = kind_color(p, kind);
+                                ui.painter().rect_filled(rect, CornerRadius::same(8), p.tint(c));
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    kind_icon(kind),
+                                    egui::FontId::proportional(24.0),
+                                    c,
+                                );
+                            }
                         }
+                        ui.add_space(4.0);
+                        // Actions on the right, the text in between.
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            action = actions(ui, p, item).or(action);
+                            ui.add_space(8.0);
+                            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                ui.add(
+                                    egui::Label::new(text::rich(item.display_name()).size(14.5).strong()).truncate(),
+                                );
+                                status_line(ui, p, item);
+                                if item.status != Status::Done {
+                                    let color = match item.status {
+                                        Status::Failed => p.danger,
+                                        Status::Paused | Status::Queued => p.weak,
+                                        _ => p.accent,
+                                    };
+                                    let fraction = if item.status == Status::Active && item.stage.is_some() {
+                                        None
+                                    } else {
+                                        item.fraction()
+                                    };
+                                    let fraction =
+                                        if item.status == Status::Active { fraction } else { fraction.or(Some(0.0)) };
+                                    theme::bar(ui, p, fraction, color, ui.available_width());
+                                }
+                            });
+                        });
                     });
-                });
-            });
+                })
         })
         .response;
-    let resp = ui.interact(resp.rect, egui::Id::new(("row", item.id)), Sense::click());
     if resp.double_clicked() && item.status == Status::Done {
         action = Some(RowAction::Open(item.id));
     }
@@ -307,4 +315,76 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
                 });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+    use swiftdm::manager::Source;
+
+    fn item() -> Item {
+        Item {
+            id: 7,
+            url: "https://example.com/a.zip".into(),
+            source: Source::File,
+            name: "a.zip".into(),
+            dir: "/tmp".into(),
+            path: Some("/tmp/a.zip".into()),
+            status: Status::Done,
+            error: None,
+            total: Some(10),
+            done: 10,
+            added: 0,
+            finished: Some(0),
+            thumbnail: None,
+            resume: None,
+            headers: Vec::new(),
+            speed: 0.0,
+            eta: None,
+            stage: None,
+        }
+    }
+
+    /// Clicks at `at` and returns what the row reported.
+    fn click(ctx: &egui::Context, at: Pos2) -> Option<RowAction> {
+        let p = Palette::new(true, false, crate::theme::Accent::Indigo);
+        let mut thumbs = Thumbs::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(900.0, 300.0));
+        let mut got = None;
+        let press = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for events in [vec![Event::PointerMoved(at)], vec![press(true)], vec![press(false)], vec![]] {
+            let input = RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                if let Some(a) = row(ui, &p, &item(), &mut thumbs) {
+                    got = Some(a);
+                }
+            });
+            out.textures_delta.clear();
+        }
+        got
+    }
+
+    #[test]
+    fn the_buttons_on_a_row_can_be_clicked() {
+        let ctx = egui::Context::default();
+        // Lay the row out once.
+        let _ = click(&ctx, pos2(-10.0, -10.0));
+        let mut seen = Vec::new();
+        // Along the row's middle, across its right side where the buttons are.
+        for x in (600..900).step_by(6) {
+            if let Some(a) = click(&ctx, pos2(x as f32, 40.0))
+                && !seen.contains(&a)
+            {
+                seen.push(a);
+            }
+        }
+        assert!(seen.contains(&RowAction::Open(7)), "{seen:?}");
+        assert!(seen.contains(&RowAction::Reveal(7)), "{seen:?}");
+    }
 }

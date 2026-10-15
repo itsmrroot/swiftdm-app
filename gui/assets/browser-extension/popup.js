@@ -37,11 +37,17 @@ async function send(msg, button) {
   status.querySelector("span").textContent = ok ? t("connected") : t("notConnected");
   $("setup").hidden = ok;
 
-  // This page.
+  // This page: the video it is showing (on a feed, the one being watched).
+  let target = page;
+  if (web) {
+    const found = await ext.tabs.sendMessage(tab.id, { type: "current-video" }).catch(() => null);
+    if (found?.url) target = found.url;
+  }
   $("page").hidden = !web;
   $("pageTitle").textContent = tab?.title || page;
-  $("video").onclick = (e) => send({ url: page, mode: "video" }, e.target);
-  $("audio").onclick = (e) => send({ url: page, mode: "audio" }, e.target);
+  $("pageTitle").title = target;
+  $("video").onclick = (e) => send({ url: target, mode: "video", referer: page }, e.target);
+  $("audio").onclick = (e) => send({ url: target, mode: "audio", referer: page }, e.target);
 
   // Media files the page loaded.
   const key = `tab:${tab?.id}`;

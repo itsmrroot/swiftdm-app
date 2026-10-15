@@ -498,6 +498,7 @@ mod tests {
         include_str!("power.rs"),
         include_str!("helpers.rs"),
         include_str!("i18n.rs"),
+        include_str!("instance.rs"),
         include_str!("list.rs"),
         include_str!("settings.rs"),
         include_str!("theme.rs"),

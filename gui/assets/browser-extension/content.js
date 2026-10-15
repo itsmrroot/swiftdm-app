@@ -5,6 +5,73 @@
   window.__swiftdm = true;
 
   const t = (key) => ext.i18n.getMessage(key) || key;
+
+  // ---------------------------------------------------------------------------
+  // The address of a video: on feeds (TikTok, Instagram, X…) the page's
+  // address is the feed, and the video itself plays from a private blob:
+  // stream — its own link is found next to it in the page.
+
+  const SINGLE = [
+    /tiktok\.com\/@[^/?#]*\/(video|photo)\/\d+/,
+    /instagram\.com\/(reels?|p|tv)\/[\w-]+/,
+    /(twitter|x)\.com\/[^/?#]+\/status\/\d+/,
+    /youtube\.com\/(watch\?(.*&)?v=|shorts\/|live\/)[\w-]+/,
+    /youtu\.be\/[\w-]+/,
+    /facebook\.com\/(.*\/videos\/|reel\/|watch\/?\?v=)\d+/,
+    /fb\.watch\/\w+/,
+    /vimeo\.com\/(\d+|.*\/videos?\/\d+)/,
+    /dailymotion\.com\/video\//,
+    /reddit\.com\/r\/[^/]+\/comments\//,
+    /twitch\.tv\/(videos\/\d+|[^/]+\/clip\/)/,
+    /bilibili\.com\/video\//,
+    /threads\.(net|com)\/@[^/]+\/post\//,
+  ];
+  const single = (url) => SINGLE.some((re) => re.test(url));
+
+  /** The link to `video` itself, or the page's address. */
+  function videoUrl(video) {
+    if (single(location.href)) return location.href;
+    // A link to a single video near it (the post or item it is in).
+    const tiktok = location.hostname.endsWith("tiktok.com");
+    let node = video;
+    for (let depth = 0; node && depth < 25; depth++, node = node.parentElement) {
+      // TikTok names a video's box after its id ("xgwrapper-0-7353…").
+      if (tiktok) {
+        for (const attr of node.attributes ?? []) {
+          const id = /(?:^|\D)(\d{18,20})(?:\D|$)/.exec(attr.value);
+          if (id) return `https://www.tiktok.com/@/video/${id[1]}`;
+        }
+      }
+      // Up to the box that holds only this video: higher up, the links
+      // belong to other posts of the feed.
+      if ((node.querySelectorAll?.("video").length ?? 0) > 1) break;
+      for (const a of node.querySelectorAll?.("a[href]") ?? []) {
+        if (single(a.href)) return a.href;
+      }
+    }
+    return location.href;
+  }
+
+  /** The video being watched: the playing one, else the largest in view. */
+  function currentVideo() {
+    const visible = (v) => {
+      const r = v.getBoundingClientRect();
+      const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+      const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+      return w * h;
+    };
+    const videos = [...document.querySelectorAll("video")].filter((v) => visible(v) > 0);
+    const playing = videos.filter((v) => !v.paused && !v.ended);
+    const pool = playing.length ? playing : videos;
+    return pool.sort((a, b) => visible(b) - visible(a))[0] || null;
+  }
+
+  // The popup asks which video this page is showing.
+  ext.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (msg?.type !== "current-video") return;
+    const v = currentVideo();
+    reply({ url: v ? videoUrl(v) : single(location.href) ? location.href : null, src: v?.currentSrc || null });
+  });
   let enabled = true;
   ext.runtime.sendMessage({ type: "settings" }).then((s) => (enabled = s?.videoButton !== false)).catch(() => {});
   ext.storage.onChanged.addListener((c) => {
@@ -85,7 +152,13 @@
     e.preventDefault();
     e.stopPropagation();
     const reply = await ext.runtime
-      .sendMessage({ type: "video", mode: button.dataset.mode, src: target.currentSrc || target.src, pageUrl: location.href })
+      .sendMessage({
+        type: "video",
+        mode: button.dataset.mode,
+        url: videoUrl(target),
+        src: target.currentSrc || target.src,
+        pageUrl: location.href,
+      })
       .catch(() => ({ ok: false }));
     const old = bar.innerHTML;
     bar.innerHTML = `<span class="toast">${reply?.ok ? "✓ " + t("sent") : "⚠ " + t("failed")}</span>`;
