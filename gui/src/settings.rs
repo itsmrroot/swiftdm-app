@@ -517,6 +517,16 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
                 Err(e) => (false, format!("{e:#}")),
             });
         }
+        // To paste into the browser's folder picker.
+        if ui.button(icon_label(icon::COPY, "Copy the path")).clicked() {
+            page.message = Some(match crate::browser::write_extension(b.is_firefox()) {
+                Ok(dir) => {
+                    ui.ctx().copy_text(dir.display().to_string());
+                    (true, format!("{} {}", trl("Copied:"), dir.display()))
+                }
+                Err(e) => (false, format!("{e:#}")),
+            });
+        }
         let page_label = if b.is_firefox() {
             icon_label(icon::ARROW_SQUARE_OUT, "Open the page")
         } else {

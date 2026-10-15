@@ -489,25 +489,47 @@ fn firefox_manifest(chrome: &[u8]) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec_pretty(&m)?)
 }
 
-/// Writes the extension for `browser`'s kind into SwiftDM's folder (to load
-/// it "unpacked") and returns the folder.
+/// Where the extension is put to be loaded "unpacked": in Documents, as
+/// SwiftDM's own folder is hidden (AppData, Library) and the browser's
+/// folder picker would not show it.
+pub fn extension_dir(firefox: bool) -> PathBuf {
+    let kind = if firefox { "firefox" } else { "chrome" };
+    let separate = std::env::var_os("SWIFTDM_DATA_DIR").is_some();
+    match dirs::document_dir().filter(|_| !separate) {
+        Some(docs) => docs.join("SwiftDM").join("Browser extension").join(kind),
+        None => old_extension_dir(firefox),
+    }
+}
+
+/// Where SwiftDM 1.2 and 1.3.0 put it.
+fn old_extension_dir(firefox: bool) -> PathBuf {
+    swiftdm::paths::data_dir().join("browser-extension").join(if firefox { "firefox" } else { "chrome" })
+}
+
+/// Writes the extension for `browser`'s kind (see [`extension_dir`]) and
+/// returns the folder.
 pub fn write_extension(firefox: bool) -> Result<PathBuf> {
-    let dir = swiftdm::paths::data_dir().join("browser-extension").join(if firefox { "firefox" } else { "chrome" });
+    write_extension_to(&extension_dir(firefox), firefox)
+}
+
+fn write_extension_to(dir: &Path, firefox: bool) -> Result<PathBuf> {
     for (path, bytes) in EXTENSION {
         let target = dir.join(path);
-        std::fs::create_dir_all(target.parent().unwrap_or(&dir))?;
+        std::fs::create_dir_all(target.parent().unwrap_or(dir))?;
         let bytes = if firefox && *path == "manifest.json" { firefox_manifest(bytes)? } else { bytes.to_vec() };
         std::fs::write(&target, bytes).with_context(|| format!("cannot write {}", target.display()))?;
     }
-    Ok(dir)
+    Ok(dir.to_path_buf())
 }
 
-/// Keeps an extension loaded "unpacked" up to date with this version.
+/// Keeps an extension loaded "unpacked" up to date with this version (also
+/// one loaded from where earlier versions put it).
 pub fn refresh_extension_files() {
     for firefox in [false, true] {
-        let dir = swiftdm::paths::data_dir().join("browser-extension").join(if firefox { "firefox" } else { "chrome" });
-        if dir.is_dir() {
-            let _ = write_extension(firefox);
+        for dir in [extension_dir(firefox), old_extension_dir(firefox)] {
+            if dir.is_dir() {
+                let _ = write_extension_to(&dir, firefox);
+            }
         }
     }
 }
