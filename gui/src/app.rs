@@ -26,7 +26,10 @@ use crate::theme::{self, Accent, Palette, ThemeChoice};
 use crate::thumbs::Thumbs;
 use crate::update::{self, Updater};
 
-pub const DEFAULT_SIZE: [f32; 2] = [1180.0, 760.0];
+/// The first window: small enough that no system maximizes it on a small
+/// screen; [`App::fit_to_screen`] makes it larger on large ones.
+pub const DEFAULT_SIZE: [f32; 2] = [1000.0, 640.0];
+const LARGE_SIZE: [f32; 2] = [1180.0, 760.0];
 pub const MIN_SIZE: [f32; 2] = [820.0, 560.0];
 const SETTINGS_KEY: &str = "settings";
 
@@ -323,7 +326,7 @@ impl App {
                 .filter(|i| i.url == r.url && i.status == Status::Done)
                 .max_by_key(|i| i.finished)
                 .map(|i| (i.display_name().to_string(), i.finished.unwrap_or(i.added)));
-            let mut dialog = AddDialog::new(ctx, r, &self.settings, quick);
+            let mut dialog = AddDialog::new(r, &self.settings, quick);
             if before.is_some() {
                 // Downloaded before: ask, whatever the setting.
                 dialog.quick = false;
@@ -333,6 +336,8 @@ impl App {
         }
         self.url.clear();
         self.page = Page::Downloads;
+        // The lookups start in the next frame (a few at once).
+        ctx.request_repaint();
     }
 
     fn start(&mut self, downloads: Vec<add::NewDownload>) {
@@ -346,6 +351,19 @@ impl App {
     }
 
     fn poll_adds(&mut self, ctx: &egui::Context, p: &Palette) {
+        // A few links are looked at at once (an imported list may have
+        // hundreds); the one shown first.
+        const AT_ONCE: usize = 4;
+        let mut running = self.adds.iter().filter(|d| d.looking() && !d.waiting()).count();
+        let shown = self.adds.iter().position(|d| !d.quick);
+        let order = shown.into_iter().chain(0..self.adds.len());
+        let settings = self.settings.clone();
+        for i in order {
+            if self.adds[i].waiting() && (running < AT_ONCE || Some(i) == shown) {
+                self.adds[i].start(ctx, &settings);
+                running += 1;
+            }
+        }
         // Quick ones start on their own.
         let mut start = Vec::new();
         for d in &mut self.adds {
@@ -564,11 +582,15 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
         let zoom = ctx.zoom_factor();
         // In points (the window's size is in logical points, before zoom).
-        let want = Vec2::new(DEFAULT_SIZE[0].min(monitor.x * 0.88), DEFAULT_SIZE[1].min(monitor.y * 0.88))
-            .max(Vec2::new(MIN_SIZE[0], MIN_SIZE[1]).min(monitor * 0.95));
+        // About 70% of the screen, between the first size and a large one,
+        // and never more than 88%.
+        let want = (monitor * 0.7)
+            .clamp(Vec2::from(DEFAULT_SIZE), Vec2::from(LARGE_SIZE))
+            .min(monitor * 0.88)
+            .max(Vec2::from(MIN_SIZE).min(monitor * 0.95));
         let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(want * zoom) / zoom;
-        if size.x > want.x + 1.0 || size.y > want.y + 1.0 {
-            log::info!("swiftdm: fitting the window into a {}×{} screen", monitor.x, monitor.y);
+        if (size - want).abs().max_elem() > 1.0 {
+            log::info!("swiftdm: fitting the window to a {}×{} screen", monitor.x, monitor.y);
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
             if let Some(outer) = outer {
                 let left_top = outer.min + (outer.size() - want) / 2.0;
@@ -646,8 +668,8 @@ impl App {
     /// Links from a text file (one or more per line).
     fn import_links(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter(tr("Text files"), &["txt", "csv", "list", "md", "html", "htm"])
-            .add_filter(tr("All files"), &["*"])
+            .add_filter(trl("Text files"), &["txt", "csv", "list", "md", "html", "htm"])
+            .add_filter(trl("All files"), &["*"])
             .pick_file()
         else {
             return;
@@ -655,11 +677,16 @@ impl App {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                // Links inside quotes or brackets (HTML, CSV) count too.
-                let cleaned: String = text
-                    .chars()
-                    .map(|c| if matches!(c, '"' | '\'' | '<' | '>' | ',' | ';') { ' ' } else { c })
-                    .collect();
+                // Links inside quotes or brackets (HTML) and lists (CSV)
+                // count too; commas inside a link stay.
+                let spaced: String =
+                    text.chars().map(|c| if matches!(c, '"' | '\'' | '<' | '>') { ' ' } else { c }).collect();
+                let spaced = spaced.replace(",http", " http").replace(";http", " http");
+                let cleaned = spaced
+                    .split_whitespace()
+                    .map(|w| w.trim_matches(|c| matches!(c, ',' | ';' | '(' | ')' | '[' | ']')))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 self.add_links(ctx, &cleaned);
             }
             Err(e) => {
@@ -726,7 +753,11 @@ impl App {
                 // Quick settings: the ones changed now and then, without
                 // leaving the list.
                 let mut open_settings = false;
+                // Stays open while sliders and boxes are used.
+                let keep_open = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                 egui::containers::menu::MenuButton::from_button(chip(icon::SLIDERS_HORIZONTAL.to_string(), false))
+                    .config(keep_open)
                     .ui(ui, |ui| {
                         ui.set_min_width(300.0);
                         let s = &mut self.settings;
@@ -1330,17 +1361,39 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Hand-overs from another start or the browser: taking them here
         // confirms to the sender that this SwiftDM works (see instance.rs).
-        while let Some(links) = self.inbox.as_ref().and_then(Inbox::poll) {
+        let in_front = ctx.input(|i| i.focused);
+        while let Some(links) = self.inbox.as_ref().and_then(|i| i.poll(in_front)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if !links.is_empty() {
                 self.add_requests(ctx, links);
             }
         }
+        // Also while minimized: notifications, the schedule, when done.
+        let p = Palette::new(
+            ctx.global_style().visuals.dark_mode,
+            self.settings.theme == ThemeChoice::Night,
+            self.settings.accent,
+        );
+        let items = self.manager.items();
+        self.watch_items(ctx, &items, &p);
+        self.watch_clipboard(ctx, &p);
+        let paused = items.iter().any(|i| i.status == Status::Paused);
+        let due = self.power.tick(
+            ctx,
+            self.manager.busy(),
+            paused,
+            self.settings.keep_awake,
+            self.settings.start_at,
+            self.settings.pause_at,
+        );
+        self.on_due(ctx, due);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        static DRAWN: std::sync::Once = std::sync::Once::new();
+        DRAWN.call_once(crate::drawn);
         self.fit_to_screen(&ctx);
         self.apply_settings(&ctx);
         self.helpers.poll(&ctx);
@@ -1351,8 +1404,6 @@ impl eframe::App for App {
         }
         let p = Palette::new(ui.visuals().dark_mode, self.settings.theme == ThemeChoice::Night, self.settings.accent);
         let items = self.manager.items();
-        self.watch_items(&ctx, &items, &p);
-        self.watch_clipboard(&ctx, &p);
 
         // Ctrl/Cmd+V outside a text field adds the link.
         let nothing_focused = ctx.memory(|m| m.focused().is_none());
@@ -1371,14 +1422,6 @@ impl eframe::App for App {
         for c in self.menu.commands(&ctx, self.language) {
             self.run(&ctx, c);
         }
-        let due = self.power.tick(
-            &ctx,
-            self.manager.busy(),
-            self.settings.keep_awake,
-            self.settings.start_at,
-            self.settings.pause_at,
-        );
-        self.on_due(&ctx, due);
         self.poll_hashing(&ctx, &p);
         if self.browser_checked.elapsed() > Duration::from_secs(5) {
             self.browser_checked = Instant::now();
@@ -1470,6 +1513,9 @@ impl eframe::App for App {
             return;
         }
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        // A window state saved by SwiftDM 1.0 (maximized, or on a screen
+        // that is gone) must not come back.
+        storage.set_string("window", String::new());
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

@@ -343,6 +343,8 @@ mod tests {
             speed: 0.0,
             eta: None,
             stage: None,
+            order: 0,
+            work_dir: None,
         }
     }
 

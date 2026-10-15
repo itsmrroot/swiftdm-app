@@ -59,6 +59,28 @@ impl Net {
         self
     }
 
+    /// The headers that may go to `url` when they came with `original`:
+    /// the browser's cookies and origin belong to the site they came from,
+    /// never to another one a link redirects to.
+    pub fn for_url(&self, original: &str, url: &str) -> Net {
+        let same = crate::util::host(original).eq_ignore_ascii_case(crate::util::host(url));
+        let headers = self
+            .headers
+            .iter()
+            .filter(|(k, _)| same || !matches!(k.to_ascii_lowercase().as_str(), "cookie" | "origin"))
+            .cloned()
+            .collect();
+        Net { proxy: self.proxy.clone(), headers }
+    }
+
+    /// The proxy, checked: a mistyped one must not quietly be bypassed.
+    fn checked_proxy(&self) -> Result<Option<ureq::Proxy>> {
+        match self.proxy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            None => Ok(None),
+            Some(p) => ureq::Proxy::new(p).map(Some).map_err(|_| anyhow!("the proxy address is not valid: {p}")),
+        }
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
@@ -73,20 +95,50 @@ fn get(agent: &ureq::Agent, url: &str, net: &Net) -> ureq::RequestBuilder<ureq::
     req
 }
 
+/// Whether `proxy` is a proxy address SwiftDM can use (empty: none).
+pub fn proxy_is_valid(proxy: &str) -> bool {
+    proxy.trim().is_empty() || ureq::Proxy::new(proxy.trim()).is_ok()
+}
+
 fn agent(body_timeout: Option<Duration>, net: &Net) -> ureq::Agent {
+    agent_config(body_timeout, net).build().into()
+}
+
+fn agent_config(body_timeout: Option<Duration>, net: &Net) -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
     let user_agent = net.header("user-agent").unwrap_or(USER_AGENT).to_string();
-    let proxy = net.proxy.as_deref().filter(|p| !p.trim().is_empty()).and_then(|p| ureq::Proxy::new(p.trim()).ok());
-    ureq::Agent::config_builder()
+    let mut config = ureq::Agent::config_builder();
+    // Without one of SwiftDM's own, the system's (HTTPS_PROXY, ALL_PROXY)
+    // stays in use. An invalid one was refused by `probe_with` already.
+    if let Ok(Some(proxy)) = net.checked_proxy() {
+        config = config.proxy(Some(proxy));
+    }
+    config
         .user_agent(user_agent)
-        .proxy(proxy)
         // Byte ranges must refer to the file itself, never a compressed copy.
         .accept_encoding("identity")
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_recv_body(body_timeout)
         .http_status_as_error(false)
-        .build()
-        .into()
+}
+
+/// `location` (a redirect target) made absolute against `base`.
+pub fn join_url(base: &str, location: &str) -> String {
+    if location.contains("://") {
+        return location.to_string();
+    }
+    let (scheme, rest) = base.split_once("://").unwrap_or(("https", base));
+    if let Some(l) = location.strip_prefix("//") {
+        return format!("{scheme}://{l}");
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if location.starts_with('/') {
+        return format!("{scheme}://{host}{location}");
+    }
+    // Relative to the folder of the current address.
+    let path = rest[host.len()..].split(['?', '#']).next().unwrap_or("");
+    let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
+    format!("{scheme}://{host}{dir}{location}")
 }
 
 /// What a link points to, found out before downloading.
@@ -118,19 +170,39 @@ pub fn probe(url: &str) -> Result<Probe> {
 
 /// Like [`probe`], through `net`.
 pub fn probe_with(url: &str, net: &Net) -> Result<Probe> {
-    use ureq::ResponseExt;
-    let agent = agent(Some(Duration::from_secs(20)), net);
-    let mut resp = get(&agent, url, net).header("Range", "bytes=0-0").call().map_err(net_error)?;
-    if resp.status().as_u16() == 416 {
-        // Some servers refuse the range of an empty file.
-        resp = get(&agent, url, net).call().map_err(net_error)?;
+    net.checked_proxy()?;
+    // Redirects are followed here, not by ureq (which drops cookies on
+    // every redirect): the browser's cookies go along while the site stays
+    // the same, and never to another site.
+    let agent: ureq::Agent = agent_config(Some(Duration::from_secs(20)), net)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .build()
+        .into();
+    let mut final_url = url.to_string();
+    let mut resp = None;
+    for _ in 0..10 {
+        let net = net.for_url(url, &final_url);
+        let mut r = get(&agent, &final_url, &net).header("Range", "bytes=0-0").call().map_err(net_error)?;
+        if r.status().as_u16() == 416 {
+            // Some servers refuse the range of an empty file.
+            r = get(&agent, &final_url, &net).call().map_err(net_error)?;
+        }
+        let location = r.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
+        match (r.status().as_u16(), location) {
+            (301 | 302 | 303 | 307 | 308, Some(loc)) => final_url = join_url(&final_url, &loc),
+            _ => {
+                resp = Some(r);
+                break;
+            }
+        }
     }
+    let resp = resp.ok_or_else(|| anyhow!("the link redirects too often"))?;
     let status = resp.status().as_u16();
     if status >= 400 {
         bail!("{}", status_message(status));
     }
     let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
-    let final_url = resp.get_uri().to_string();
     let content_type = header("content-type").unwrap_or_default().to_ascii_lowercase();
     let (size, resumable) = if status == 206 {
         (header("content-range").and_then(|r| parse_content_range_total(&r)), true)
@@ -264,6 +336,8 @@ pub fn download(
     // Failures before any data arrives keep the earlier resume point.
     let keep = |error: anyhow::Error| Failure { error, resume: job.resume.clone() };
     let probe = probe_with(job.url, &job.net).map_err(keep)?;
+    // The browser's cookies only if the file is still on the link's site.
+    let net = job.net.for_url(job.url, &probe.url);
     if stop.load(Ordering::Relaxed) {
         return Ok(Outcome::Stopped(job.resume));
     }
@@ -273,11 +347,10 @@ pub fn download(
     let part = part_path(job.path);
     let outcome = match probe.size.filter(|_| probe.resumable) {
         Some(size) => {
-            let target =
-                Target { url: &probe.url, part: &part, size, validator: probe.validator.clone(), net: &job.net };
+            let target = Target { url: &probe.url, part: &part, size, validator: probe.validator.clone(), net: &net };
             ranged(target, job.connections.clamp(1, 32), job.resume, stop, limiter, report)?
         }
-        None => single(&probe.url, &job.net, &part, probe.size, stop, limiter, report)?,
+        None => single(&probe.url, &net, &part, probe.size, stop, limiter, report)?,
     };
     if let Step::Stopped(resume) = outcome {
         return Ok(Outcome::Stopped(resume));
@@ -492,8 +565,14 @@ impl Shared<'_> {
     /// One request for bytes `pos..=end` of segment `i`. Returns whether any
     /// bytes arrived; a timeout after progress is a normal renewal.
     fn request(&self, agent: &ureq::Agent, i: usize, pos: u64, end: u64, buf: &mut [u8]) -> Result<bool> {
-        let mut resp =
-            get(agent, self.url, self.net).header("Range", format!("bytes={pos}-{end}")).call().map_err(net_error)?;
+        let mut req = get(agent, self.url, self.net).header("Range", format!("bytes={pos}-{end}"));
+        // The file changed on the server meanwhile: the server sends it whole
+        // (200) instead of the part, which ends this download rather than
+        // mixing two versions. Weak ETags cannot be used for this.
+        if let Some(v) = self.validator.as_deref().filter(|v| !v.starts_with("W/")) {
+            req = req.header("If-Range", v);
+        }
+        let mut resp = req.call().map_err(net_error)?;
         match resp.status().as_u16() {
             206 => {}
             200 => return Err(Fatal("the server stopped allowing resumed downloads".into()).into()),
@@ -768,6 +847,21 @@ fn with_extension_for(name: &str, content_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redirect_targets() {
+        assert_eq!(join_url("https://a.org/x/y?q=1", "/z"), "https://a.org/z");
+        assert_eq!(join_url("https://a.org/x/y", "z.zip"), "https://a.org/x/z.zip");
+        assert_eq!(join_url("https://a.org/x", "//cdn.b.org/f"), "https://cdn.b.org/f");
+        assert_eq!(join_url("https://a.org/", "https://c.org/f"), "https://c.org/f");
+        let net = Net { proxy: None, headers: vec![("Cookie".into(), "s=1".into()), ("Referer".into(), "r".into())] };
+        assert_eq!(net.for_url("https://a.org/dl", "https://a.org/f").headers.len(), 2);
+        assert_eq!(
+            net.for_url("https://a.org/dl", "https://cdn.b.org/f").headers,
+            vec![("Referer".into(), "r".into())]
+        );
+        assert!(proxy_is_valid("") && proxy_is_valid("socks5://127.0.0.1:9050") && !proxy_is_valid("sock5://x:1"));
+    }
 
     #[test]
     fn names_from_headers_and_links() {

@@ -33,9 +33,15 @@ struct LookError {
 }
 
 enum Stage {
+    /// Not looked up yet: only a few links are looked at at once.
+    Waiting,
     Looking(Job<std::result::Result<Looked, LookError>>),
     Media(Info),
-    Playlist { title: String, entries: Vec<media::Entry>, selected: Vec<bool> },
+    Playlist {
+        title: String,
+        entries: Vec<media::Entry>,
+        selected: Vec<bool>,
+    },
     File(Probe),
     Failed(LookError),
 }
@@ -108,7 +114,8 @@ fn look(
         }
     }
     let mut browsers: Vec<Option<&str>> = vec![s.cookies_from.as_deref()];
-    if s.auto_cookies && s.cookies_from.is_none() {
+    // Only for video sites (see manager.rs).
+    if s.auto_cookies && s.cookies_from.is_none() && by_site {
         browsers.extend(manager::browsers().iter().map(|b| Some(*b)));
     }
     let mut last = None;
@@ -116,7 +123,7 @@ fn look(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match media::inspect(url, cookies, stop) {
+        match media::inspect(url, cookies, s.proxy.as_deref(), stop) {
             Ok(found) => return Ok(Looked::Media(found)),
             Err(e) if matches!(e.kind, ErrorKind::Login | ErrorKind::Forbidden) => {
                 last.get_or_insert(e);
@@ -154,16 +161,16 @@ pub fn parse_time(t: &str) -> Option<u32> {
 impl AddDialog {
     /// A link from the browser (or another start of the app): `request`'s
     /// mode, headers and file name come along.
-    pub fn new(ctx: &egui::Context, request: Incoming, settings: &Settings, quick: bool) -> Self {
+    pub fn new(request: Incoming, settings: &Settings, quick: bool) -> Self {
         let mut options = settings.media_options();
         match request.mode.as_str() {
             "audio" => options.mode = Mode::Audio,
             "video" => options.mode = Mode::Video,
             _ => {}
         }
-        let mut d = AddDialog {
+        AddDialog {
             url: request.url.trim().to_string(),
-            stage: Stage::Failed(LookError { kind: ErrorKind::Other, message: String::new() }),
+            stage: Stage::Waiting,
             quick,
             dir: settings.download_dir.clone(),
             options,
@@ -174,9 +181,7 @@ impl AddDialog {
             name_hint: request.name.filter(|n| !n.trim().is_empty()),
             part: None,
             before: None,
-        };
-        d.start(ctx, settings);
-        d
+        }
     }
 
     /// Looks up the link (again).
@@ -186,8 +191,13 @@ impl AddDialog {
         self.stage = Stage::Looking(Job::spawn(ctx, move |_, stop| Ok(look(&url, &net, as_file, &s, stop))));
     }
 
+    /// Being looked up, or waiting for that.
     pub fn looking(&self) -> bool {
-        matches!(self.stage, Stage::Looking(_))
+        matches!(self.stage, Stage::Looking(_) | Stage::Waiting)
+    }
+
+    pub fn waiting(&self) -> bool {
+        matches!(self.stage, Stage::Waiting)
     }
 
     /// Takes in the result of looking. In quick mode, returns the download
@@ -292,7 +302,7 @@ impl AddDialog {
                 ui.add_space(8.0);
             }
             match &mut self.stage {
-                Stage::Looking(job) => {
+                stage @ (Stage::Looking(_) | Stage::Waiting) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(tr("Looking at the link…"));
@@ -300,7 +310,9 @@ impl AddDialog {
                     ui.add_space(8.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if theme::secondary_button(ui, tr("Cancel")).clicked() {
-                            job.stop();
+                            if let Stage::Looking(job) = stage {
+                                job.stop();
+                            }
                             action = Action::Close;
                         }
                     });
@@ -482,12 +494,14 @@ impl AddDialog {
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let count = self.downloads().len();
+                // "Only a part" with times that make no sense: not silently the whole video.
+                let part_ok = self.part.is_none() || self.options().section.is_some();
                 let label = if count > 1 {
                     format!("  {}  {}  ", icon::DOWNLOAD_SIMPLE, trf("Download {n}", &[("n", &count)]))
                 } else {
                     format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Download"))
                 };
-                if theme::primary_button(ui, p, &label, count > 0).clicked() {
+                if theme::primary_button(ui, p, &label, count > 0 && part_ok).clicked() {
                     action = Action::Start(self.downloads());
                 }
                 if theme::secondary_button(ui, tr("Cancel")).clicked() {

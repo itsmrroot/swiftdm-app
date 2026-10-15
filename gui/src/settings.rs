@@ -223,9 +223,11 @@ pub struct Page {
     pub tab: Tab,
     /// The browser whose steps are shown on the Browser tab.
     browser: Option<Browser>,
-    /// Typed times of the schedule.
-    start_text: String,
-    pause_text: String,
+    /// Typed times of the schedule (`None`: not edited yet).
+    start_text: Option<String>,
+    pause_text: Option<String>,
+    /// The browsers found (looked for once).
+    installed: Option<Vec<Browser>>,
     /// Result of the last action on the Browser tab.
     message: Option<(bool, String)>,
 }
@@ -453,7 +455,8 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
         ),
     }
     ui.add_space(10.0);
-    let installed: Vec<Browser> = Browser::ALL.into_iter().filter(|b| b.installed()).collect();
+    let installed =
+        page.installed.get_or_insert_with(|| Browser::ALL.into_iter().filter(|b| b.installed()).collect()).clone();
     if installed.is_empty() {
         theme::paragraph(ui, trl("No supported browser was found on this computer."), 14.5, p.weak);
         return;
@@ -532,18 +535,17 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
 }
 
 fn schedule(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, after_done: &mut AfterDone) {
-    let time_row = |ui: &mut Ui, label: &str, hint: &str, value: &mut Option<(u8, u8)>, text: &mut String| {
+    let time_row = |ui: &mut Ui, label: &str, hint: &str, value: &mut Option<(u8, u8)>, text: &mut Option<String>| {
         row(ui, p, label, hint, |ui| {
             let mut on = value.is_some();
             if ui.checkbox(&mut on, tr("Every day at")).changed() {
-                *value = if on { Some(power::parse_hhmm(text).unwrap_or((1, 0))) } else { None };
-                text.clear();
+                let typed = text.as_deref().and_then(power::parse_hhmm);
+                *value = if on { Some(typed.unwrap_or((1, 0))) } else { None };
+                *text = None;
             }
             if let Some(v) = *value {
-                // What is typed stays while it is being typed.
-                if text.is_empty() {
-                    *text = power::hhmm(v);
-                }
+                // What is typed stays while it is being typed (also nothing).
+                let text = text.get_or_insert_with(|| power::hhmm(v));
                 let resp = ui.add(egui::TextEdit::singleline(text).desired_width(60.0).hint_text("01:00"));
                 if resp.changed()
                     && let Some(v) = power::parse_hhmm(text)

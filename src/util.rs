@@ -39,6 +39,9 @@ pub fn sanitize_filename(name: &str) -> String {
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c if c.is_control() => '_',
+            // Invisible and direction-changing characters can disguise a
+            // name ("invoice\u{202E}fdp.exe" shows as "invoiceexe.pdf").
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' => '_',
             c => c,
         })
         .collect();
@@ -175,10 +178,12 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
         if bytes[i] == b'%'
             && i + 2 < bytes.len()
-            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
         {
+            let b = (h * 16 + l) as u8;
             out.push(b);
             i += 3;
             continue;
@@ -188,6 +193,36 @@ pub fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Marks a downloaded file as coming from the internet, as browsers do, so
+/// that the system's checks still apply when it is opened (Gatekeeper on
+/// macOS, SmartScreen and Protected View on Windows).
+pub fn mark_from_internet(path: &Path, url: &str, referer: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (url, referer);
+        let flags = format!("0081;{:x};SwiftDM;", now());
+        let _ = std::process::Command::new("xattr")
+            .args(["-w", "com.apple.quarantine", &flags])
+            .arg(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let mut zone = String::from("[ZoneTransfer]\r\nZoneId=3\r\n");
+        if let Some(r) = referer {
+            zone.push_str(&format!("ReferrerUrl={r}\r\n"));
+        }
+        zone.push_str(&format!("HostUrl={url}\r\n"));
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let _ = std::fs::write(PathBuf::from(stream), zone);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = (path, url, referer);
 }
 
 /// Seconds since 1970.
@@ -278,6 +313,9 @@ mod tests {
         assert_eq!(host("https://user@cdn.example.org:8080/x"), "cdn.example.org");
         assert_eq!(percent_decode("my%20file%2B1.zip"), "my file+1.zip");
         assert_eq!(percent_decode("a+b.zip"), "a+b.zip");
+        assert_eq!(percent_decode("%aé"), "%aé");
+        assert_eq!(percent_decode("a%20"), "a ");
+        assert_eq!(sanitize_filename("invoice\u{202E}fdp.exe"), "invoice_fdp.exe");
     }
 
     #[test]

@@ -53,6 +53,14 @@ pub struct Item {
     /// Where a plain download continues.
     #[serde(default)]
     pub resume: Option<Resume>,
+    /// Place in the queue: lower starts earlier ("Start next"); then the
+    /// oldest first.
+    #[serde(default)]
+    pub order: i64,
+    /// The folder a video or song download writes into, fixed when it
+    /// first starts (sorting by kind may be switched meanwhile).
+    #[serde(default)]
+    pub work_dir: Option<PathBuf>,
     /// Sent with every request: the browser's cookies and page for a link
     /// that came from the browser extension.
     #[serde(default)]
@@ -208,6 +216,8 @@ impl Inner {
             .and_then(|_| std::fs::rename(&tmp, path));
         if let Err(e) = result {
             log::warn!("cannot save the download list: {e}");
+            // Tried again next time.
+            self.lock().dirty = true;
         }
     }
 }
@@ -325,6 +335,8 @@ impl Manager {
                 finished: None,
                 thumbnail,
                 resume: None,
+                order: 0,
+                work_dir: None,
                 headers,
                 speed: 0.0,
                 eta: None,
@@ -434,9 +446,9 @@ impl Manager {
     pub fn start_next(&self, id: u64) {
         {
             let mut s = self.inner.lock();
-            let first = s.items.iter().filter(|i| i.status == Status::Queued).map(|i| i.added).min().unwrap_or(0);
+            let first = s.items.iter().filter(|i| i.status == Status::Queued).map(|i| i.order).min().unwrap_or(0);
             if let Some(item) = s.items.iter_mut().find(|i| i.id == id) {
-                item.added = item.added.min(first - 1);
+                item.order = item.order.min(first - 1);
                 if item.status == Status::Paused {
                     item.status = Status::Queued;
                 }
@@ -524,11 +536,11 @@ impl Manager {
         if s.closing {
             return;
         }
-        // Oldest first.
-        let mut waiting: Vec<(i64, u64)> =
-            s.items.iter().filter(|i| i.status == Status::Queued).map(|i| (i.added, i.id)).collect();
+        // "Start next" first, then the oldest.
+        let mut waiting: Vec<(i64, i64, u64)> =
+            s.items.iter().filter(|i| i.status == Status::Queued).map(|i| (i.order, i.added, i.id)).collect();
         waiting.sort();
-        for (_, id) in waiting {
+        for (_, _, id) in waiting {
             if s.running.len() >= s.settings.max_active.max(1) {
                 break;
             }
@@ -604,6 +616,10 @@ impl Manager {
 
     fn finish(&self, id: u64, path: PathBuf) {
         let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+        if let Some(item) = self.item(id) {
+            let referer = item.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("referer")).map(|(_, v)| v.clone());
+            crate::util::mark_from_internet(&path, &item.url, referer.as_deref());
+        }
         self.inner.update(id, |i| {
             i.status = Status::Done;
             i.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| i.name.clone());
@@ -614,6 +630,8 @@ impl Manager {
             }
             i.finished = Some(now());
             i.resume = None;
+            // The browser's cookies are not kept once they are not needed.
+            i.headers.clear();
             i.speed = 0.0;
             i.eta = None;
             i.stage = None;
@@ -632,7 +650,8 @@ impl Manager {
                 let name = if !item.name.is_empty() {
                     sanitize_filename(&item.name)
                 } else {
-                    match http::probe(&item.url) {
+                    let net = http::Net { proxy: self.settings().proxy, headers: item.headers.clone() };
+                    match http::probe_with(&item.url, &net) {
                         Ok(p) => p.name,
                         Err(e) => return self.fail(id, capitalize(&format!("{e:#}"))),
                     }
@@ -710,13 +729,26 @@ impl Manager {
             options.cookies_from = settings.cookies_from.clone();
         }
         // Browsers whose login is tried when the site refuses.
+        // Only for video sites: any other link could make SwiftDM send
+        // signed-in requests to a site of its choosing.
         let mut fallbacks: Vec<&str> =
-            if settings.auto_cookies && options.cookies_from.is_none() { browsers().to_vec() } else { Vec::new() };
+            if settings.auto_cookies && options.cookies_from.is_none() && media::is_media_site(&item.url) {
+                browsers().to_vec()
+            } else {
+                Vec::new()
+            };
         fallbacks.reverse();
         let report = Progress::new(self.inner.clone(), id);
         let mut site_error: Option<media::MediaError> = None;
         let kind = if options.mode == Mode::Audio { FileKind::Audio } else { FileKind::Video };
-        let dir = self.folder_for(&item.dir, kind);
+        let dir = match &item.work_dir {
+            Some(d) => d.clone(),
+            None => {
+                let d = self.folder_for(&item.dir, kind);
+                self.inner.update(id, |i| i.work_dir = Some(d.clone()));
+                d
+            }
+        };
         let referer = item.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("referer")).map(|(_, v)| v.as_str());
         loop {
             let job = media::Job {

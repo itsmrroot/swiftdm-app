@@ -81,13 +81,14 @@ fn shortcuts(ctx: &egui::Context, out: &mut Vec<Command>) {
                 out.push(Command::Show(n));
             }
         }
+        // With Shift first: ⌘O would take ⌘⇧O too.
         let pairs = [
-            (cmd, Key::N, Command::NewDownload),
-            (cmd, Key::O, Command::ImportLinks),
             (cmd_shift, Key::O, Command::OpenFolder),
-            (cmd, Key::Comma, Command::Settings),
             (cmd_shift, Key::P, Command::PauseAll),
             (cmd_shift, Key::R, Command::ResumeAll),
+            (cmd, Key::N, Command::NewDownload),
+            (cmd, Key::O, Command::ImportLinks),
+            (cmd, Key::Comma, Command::Settings),
         ];
         for (mods, key, c) in pairs {
             if i.consume_shortcut(&KeyboardShortcut::new(mods, key)) {
@@ -213,7 +214,8 @@ mod imp {
     use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
     use super::*;
-    use crate::i18n::{Lang, tr};
+    // The system draws these menus: logical order (for Arabic).
+    use crate::i18n::{Lang, trl as tr};
 
     #[derive(Default)]
     pub struct MenuBar {

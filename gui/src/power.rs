@@ -51,11 +51,15 @@ fn act(a: AfterDone) {
     };
     match a {
         AfterDone::Sleep => {
-            if cfg!(windows) {
-                run("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"]);
-            } else if cfg!(target_os = "macos") {
+            // Sleep, not hibernate (rundll32's way hibernates when that is on).
+            #[cfg(windows)]
+            // SAFETY: plain flags.
+            unsafe {
+                windows_sys::Win32::System::Power::SetSuspendState(false, false, false);
+            }
+            if cfg!(target_os = "macos") {
                 run("pmset", &["sleepnow"]);
-            } else {
+            } else if !cfg!(windows) {
                 run("systemctl", &["suspend"]);
             }
         }
@@ -113,8 +117,10 @@ impl Awake {
                         "--who=SwiftDM",
                         "--why=Downloading",
                         "--mode=block",
-                        "sleep",
-                        "infinity",
+                        "sh",
+                        "-c",
+                        // Ends by itself should SwiftDM end.
+                        &format!("while kill -0 {pid} 2>/dev/null; do sleep 5; done"),
                     ]);
                     c
                 };
@@ -174,26 +180,29 @@ pub struct Power {
     /// The countdown before acting, once everything finished.
     countdown: Option<Instant>,
     was_busy: bool,
-    /// Day of the year each scheduled time last fired.
-    started_on: Option<u32>,
-    paused_on: Option<u32>,
+    /// Day of the year and time each scheduled time last fired (a time
+    /// changed later the same day fires again).
+    started_on: Option<(u32, (u8, u8))>,
+    paused_on: Option<(u32, (u8, u8))>,
 }
 
 const COUNTDOWN: Duration = Duration::from_secs(30);
 
 impl Power {
-    /// Called every frame. `busy`: downloads are running or waiting.
+    /// Called every frame. `busy`: downloads are running or waiting;
+    /// `paused`: some are paused (then they are not all done).
     pub fn tick(
         &mut self,
         ctx: &egui::Context,
         busy: bool,
+        paused: bool,
         keep_awake: bool,
         start_at: Option<(u8, u8)>,
         pause_at: Option<(u8, u8)>,
     ) -> Due {
         self.awake.hold(busy && keep_awake);
-        // Everything finished: start the countdown.
-        if self.was_busy && !busy && self.after_done != AfterDone::Nothing {
+        // Everything finished (not just paused): start the countdown.
+        if self.was_busy && !busy && !paused && self.after_done != AfterDone::Nothing {
             self.countdown = Some(Instant::now());
         }
         if busy {
@@ -213,12 +222,12 @@ impl Power {
             ctx.request_repaint_after(Duration::from_secs(20));
             let now = Local::now();
             let (today, time) = (now.ordinal(), (now.hour() as u8, now.minute() as u8));
-            if pause_at == Some(time) && self.paused_on != Some(today) {
-                self.paused_on = Some(today);
+            if pause_at == Some(time) && self.paused_on != Some((today, time)) {
+                self.paused_on = Some((today, time));
                 return Due::PauseAll;
             }
-            if start_at == Some(time) && self.started_on != Some(today) {
-                self.started_on = Some(today);
+            if start_at == Some(time) && self.started_on != Some((today, time)) {
+                self.started_on = Some((today, time));
                 return Due::StartAll;
             }
         }

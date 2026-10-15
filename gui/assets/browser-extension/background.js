@@ -74,7 +74,15 @@ async function createMenus() {
   add("menuPageAudio", ["page", "video", "audio"]);
 }
 
-ext.runtime.onInstalled.addListener(createMenus);
+ext.runtime.onInstalled.addListener(async () => {
+  await createMenus();
+  // Pages open before the extension came (or was updated) get the video
+  // button too, without being reloaded.
+  const tabs = await ext.tabs.query({ url: ["http://*/*", "https://*/*"] }).catch(() => []);
+  for (const tab of tabs) {
+    ext.scripting?.executeScript({ target: { tabId: tab.id }, files: ["content.js"] }).catch(() => {});
+  }
+});
 ext.runtime.onStartup?.addListener(createMenus);
 
 ext.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -84,9 +92,13 @@ ext.contextMenus.onClicked.addListener(async (info, tab) => {
       return sendLink({ url: info.linkUrl, referer: page });
     case "menuImage":
       return usable(info.srcUrl) && sendLink({ url: info.srcUrl, mode: "file", referer: page });
-    case "menuMedia":
-      // A stream in the page (blob:) is fetched by SwiftDM from the page.
-      return sendLink({ url: usable(info.srcUrl) ? info.srcUrl : page, mode: "video", referer: page });
+    case "menuMedia": {
+      if (usable(info.srcUrl)) return sendLink({ url: info.srcUrl, mode: "video", referer: page });
+      // A stream in the page (blob:): the post of the video being watched
+      // (on a feed), else the page; SwiftDM finds the video there.
+      const current = tab?.id >= 0 ? await ext.tabs.sendMessage(tab.id, { type: "current-video" }).catch(() => null) : null;
+      return sendLink({ url: usable(current?.url) ? current.url : page, mode: "video", referer: page });
+    }
     case "menuPage":
       return sendLink({ url: page, mode: "video" });
     case "menuPageAudio":
@@ -143,6 +155,20 @@ ext.downloads.onCreated.addListener(async (item) => {
 const MEDIA_EXT = /\.(mp4|webm|mkv|mov|m4v|mp3|m4a|aac|ogg|opus|flac|wav|m3u8|mpd)(\?|$)/i;
 const SKIP_HOSTS = /(googlevideo\.com|fbcdn\.net|cdninstagram\.com|tiktokcdn|twimg\.com|akamaihd\.net\/.*\.ts)/i;
 
+/** The latest updates of each tab's list. */
+const queues = new Map();
+
+async function remember(tabId, found) {
+  const key = `tab:${tabId}`;
+  const list = (await ext.storage.session.get(key))[key] || [];
+  if (list.some((m) => m.url === found.url)) return;
+  list.unshift(found);
+  const kept = list.slice(0, 25);
+  await ext.storage.session.set({ [key]: kept });
+  await ext.action.setBadgeBackgroundColor({ color: "#6366f1" });
+  await ext.action.setBadgeText({ tabId, text: String(kept.length) });
+}
+
 ext.webRequest.onResponseStarted.addListener(
   async (d) => {
     if (d.tabId < 0 || d.statusCode >= 300 || SKIP_HOSTS.test(d.url)) return;
@@ -154,13 +180,13 @@ ext.webRequest.onResponseStarted.addListener(
     const size = Number(header("content-length")) || 0;
     // Small pieces of a stream are not worth listing.
     if (!playlist && size > 0 && size < 300 * 1024) return;
-    const key = `tab:${d.tabId}`;
-    const list = (await ext.storage.session.get(key))[key] || [];
-    if (list.some((m) => m.url === d.url)) return;
-    list.unshift({ url: d.url, type: playlist ? "stream" : type.split(";")[0] || "media", size });
-    await ext.storage.session.set({ [key]: list.slice(0, 25) });
-    ext.action.setBadgeBackgroundColor({ color: "#6366f1" });
-    ext.action.setBadgeText({ tabId: d.tabId, text: String(Math.min(list.length, 99)) });
+    const found = { url: d.url, type: playlist ? "stream" : type.split(";")[0] || "media", size };
+    // One after the other per tab: two at once would each miss the other.
+    const before = queues.get(d.tabId) || Promise.resolve();
+    const next = before.then(() => remember(d.tabId, found)).catch(() => {});
+    queues.set(d.tabId, next);
+    await next;
+    if (queues.get(d.tabId) === next) queues.delete(d.tabId);
   },
   { urls: ["<all_urls>"] },
   ["responseHeaders"],
@@ -186,6 +212,9 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
       case "show":
         return native({ type: "show" });
       case "send":
+        // From the popup only: a page must not send links with this
+        // browser's cookies on its own.
+        if (sender.tab) return { ok: false, error: "not allowed" };
         return sendLink(msg);
       case "video": {
         // The button on a video: its own link as the page found it (on a

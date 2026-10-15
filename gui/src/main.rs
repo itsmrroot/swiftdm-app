@@ -40,18 +40,56 @@ fn renderer_file() -> std::path::PathBuf {
     swiftdm::paths::data_dir().join("renderer")
 }
 
+/// Here while a start with the GPU has not drawn its first picture yet: a
+/// start that crashed in the graphics driver leaves it behind.
+fn trying_file() -> std::path::PathBuf {
+    swiftdm::paths::data_dir().join("renderer-trying")
+}
+
 fn renderer() -> eframe::Renderer {
     let wanted = std::env::var("SWIFTDM_RENDERER").ok().or_else(|| std::fs::read_to_string(renderer_file()).ok());
     match wanted.as_deref().map(str::trim) {
         Some("glow") => eframe::Renderer::Glow,
+        Some("wgpu") => eframe::Renderer::Wgpu,
+        _ if trying_file().exists() => {
+            log::warn!("swiftdm: the last start with the GPU did not get to draw; using OpenGL");
+            let _ = std::fs::write(renderer_file(), "glow");
+            let _ = std::fs::remove_file(trying_file());
+            eframe::Renderer::Glow
+        }
         _ => eframe::Renderer::Wgpu,
     }
+}
+
+/// Forgets the window state SwiftDM 1.0 saved: eframe restores it even
+/// with `persist_window` off, and a maximized window would stay so.
+fn forget_window(settings: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(settings) else { return };
+    let Ok(mut kv) = ron::from_str::<std::collections::HashMap<String, String>>(&text) else { return };
+    if kv.remove("window").is_some()
+        && let Ok(text) = ron::to_string(&kv)
+    {
+        let _ = std::fs::write(settings, text);
+    }
+}
+
+/// The first picture is on the screen: the graphics work.
+pub fn drawn() {
+    let _ = std::fs::remove_file(trying_file());
 }
 
 fn main() -> eframe::Result {
     // Started by a browser as the extension's helper: no window.
     if browser::launched_as_helper() {
         browser::run_helper();
+    }
+    // SwiftDM's folder holds cookies and the hand-over secret: this user's only.
+    let data = swiftdm::paths::data_dir();
+    let _ = std::fs::create_dir_all(&data);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700));
     }
     logfile::start();
     // Links given when starting ("Open with", scripts, browser add-ons).
@@ -76,6 +114,11 @@ fn main() -> eframe::Result {
         .with_icon(icon());
     // A separate data folder (tests, portable use) keeps its own settings.
     let separate = std::env::var_os("SWIFTDM_DATA_DIR").map(|d| std::path::PathBuf::from(d).join("app"));
+    // Where eframe keeps them: the file given, else after the app id.
+    let settings = separate.clone().or_else(|| eframe::storage_dir("swiftdm-gui").map(|d| d.join("app.ron")));
+    if let Some(settings) = settings {
+        forget_window(&settings);
+    }
     let renderer = renderer();
     log::info!("swiftdm: drawing with {renderer:?}");
     let options = eframe::NativeOptions {
@@ -95,21 +138,43 @@ fn main() -> eframe::Result {
         })),
         ..Default::default()
     };
-    let result =
-        eframe::run_native("SwiftDM", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, inbox, links)))));
+    if renderer == eframe::Renderer::Wgpu {
+        let _ = std::fs::create_dir_all(swiftdm::paths::data_dir());
+        let _ = std::fs::write(trying_file(), "");
+    }
+    let run = std::panic::AssertUnwindSafe(move || {
+        eframe::run_native("SwiftDM", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, inbox, links)))))
+    });
+    let result = std::panic::catch_unwind(run)
+        .unwrap_or_else(|_| Err(eframe::Error::AppCreation("the window crashed while starting".into())));
     if let Err(e) = &result {
         log::error!("swiftdm: the window could not be shown: {e}");
+        let _ = std::fs::remove_file(trying_file());
+        let _ = std::fs::remove_file(swiftdm::paths::data_dir().join("instance-port"));
         if renderer == eframe::Renderer::Wgpu {
             // Try again with OpenGL, in a new process (a process can open its
             // window system only once).
             let _ = std::fs::write(renderer_file(), "glow");
-            let _ = std::fs::remove_file(swiftdm::paths::data_dir().join("instance-port"));
             if let Ok(exe) = std::env::current_exe()
-                && std::process::Command::new(exe).args(std::env::args().skip(1)).spawn().is_ok()
+                && std::process::Command::new(exe)
+                    .args(std::env::args().skip(1))
+                    .env("SWIFTDM_RENDERER", "glow")
+                    .spawn()
+                    .is_ok()
             {
                 log::info!("swiftdm: started again with OpenGL");
                 return Ok(());
             }
+        } else {
+            let log = swiftdm::paths::data_dir().join("swiftdm.log");
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("SwiftDM")
+                .set_description(format!(
+                    "SwiftDM could not open its window: {e}\n\nPlease update the graphics driver. Details: {}",
+                    log.display()
+                ))
+                .show();
         }
     }
     result

@@ -281,7 +281,14 @@ impl Browser {
 
     /// Whether the browser seems to be installed (it has its folder).
     pub fn installed(self) -> bool {
-        self.data_dir().is_some_and(|d| d.is_dir())
+        // Ubuntu's Firefox (a snap) keeps its profile elsewhere but reads
+        // the helpers from ~/.mozilla too.
+        let snap = || {
+            cfg!(target_os = "linux")
+                && self == Browser::Firefox
+                && dirs::home_dir().is_some_and(|h| h.join("snap/firefox").is_dir())
+        };
+        self.data_dir().is_some_and(|d| d.is_dir()) || snap()
     }
 
     /// Where the browser looks for helpers (macOS and Linux).

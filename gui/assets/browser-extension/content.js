@@ -28,19 +28,27 @@
   ];
   const single = (url) => SINGLE.some((re) => re.test(url));
 
+  /** TikTok's id of a video box: "xgwrapper-0-7353…", or an id attribute. */
+  function tiktokId(node) {
+    const wrapper = /xgwrapper-\d+-(\d{18,20})/.exec(node.id || "");
+    if (wrapper) return wrapper[1];
+    for (const attr of node.attributes ?? []) {
+      if (attr.name !== "id" && !attr.name.startsWith("data-")) continue;
+      const id = /^(?:\D*-)?(\d{18,20})$/.exec(attr.value);
+      if (id) return id[1];
+    }
+    return null;
+  }
+
   /** The link to `video` itself, or the page's address. */
   function videoUrl(video) {
-    if (single(location.href)) return location.href;
-    // A link to a single video near it (the post or item it is in).
+    // Near the video first: a video page may also show others below it.
     const tiktok = location.hostname.endsWith("tiktok.com");
     let node = video;
     for (let depth = 0; node && depth < 25; depth++, node = node.parentElement) {
-      // TikTok names a video's box after its id ("xgwrapper-0-7353…").
       if (tiktok) {
-        for (const attr of node.attributes ?? []) {
-          const id = /(?:^|\D)(\d{18,20})(?:\D|$)/.exec(attr.value);
-          if (id) return `https://www.tiktok.com/@/video/${id[1]}`;
-        }
+        const id = tiktokId(node);
+        if (id) return `https://www.tiktok.com/@/video/${id}`;
       }
       // Up to the box that holds only this video: higher up, the links
       // belong to other posts of the feed.
@@ -48,6 +56,12 @@
       for (const a of node.querySelectorAll?.("a[href]") ?? []) {
         if (single(a.href)) return a.href;
       }
+    }
+    // The post it is in, when that links to one video only.
+    const post = video.closest("article");
+    if (post) {
+      const links = new Set([...post.querySelectorAll("a[href]")].map((a) => a.href).filter(single));
+      if (links.size === 1) return [...links][0];
     }
     return location.href;
   }
@@ -73,7 +87,15 @@
     reply({ url: v ? videoUrl(v) : single(location.href) ? location.href : null, src: v?.currentSrc || null });
   });
   let enabled = true;
-  ext.runtime.sendMessage({ type: "settings" }).then((s) => (enabled = s?.videoButton !== false)).catch(() => {});
+  // Throws, not rejects, once the extension was reloaded or removed.
+  const message = (msg) => {
+    try {
+      return ext.runtime.sendMessage(msg);
+    } catch {
+      return Promise.reject(new Error("the extension was reloaded"));
+    }
+  };
+  message({ type: "settings" }).then((s) => (enabled = s?.videoButton !== false)).catch(() => {});
   ext.storage.onChanged.addListener((c) => {
     if (c.videoButton) enabled = c.videoButton.newValue !== false;
   });
@@ -151,15 +173,13 @@
     if (!button || !target) return;
     e.preventDefault();
     e.stopPropagation();
-    const reply = await ext.runtime
-      .sendMessage({
-        type: "video",
-        mode: button.dataset.mode,
-        url: videoUrl(target),
-        src: target.currentSrc || target.src,
-        pageUrl: location.href,
-      })
-      .catch(() => ({ ok: false }));
+    const reply = await message({
+      type: "video",
+      mode: button.dataset.mode,
+      url: videoUrl(target),
+      src: target.currentSrc || target.src,
+      pageUrl: location.href,
+    }).catch(() => ({ ok: false }));
     const old = bar.innerHTML;
     bar.innerHTML = `<span class="toast">${reply?.ok ? "✓ " + t("sent") : "⚠ " + t("failed")}</span>`;
     setTimeout(() => (bar.innerHTML = old), 1800);

@@ -210,14 +210,17 @@ pub fn check() -> Result<Option<Release>> {
 /// checks it.
 pub fn download(release: &Release, progress: &Progress, cancel: &AtomicBool) -> Result<PathBuf> {
     let Some(asset) = &release.asset else { bail!("no installer for this system") };
-    let dir = std::env::temp_dir().join(format!("swiftdm-update-{}", release.version));
+    // In SwiftDM's own folder: in the shared temporary folder, another
+    // user could put something in its place.
+    let dir = swiftdm::paths::data_dir().join("update");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(&asset.name);
+    let name = Path::new(&asset.name).file_name().context("a bad installer name")?;
+    let path = dir.join(name);
 
     let mut response = agent().get(&asset.url).call().context("could not download the update")?;
     let mut body = response.body_mut().with_config().limit(asset.size + 1).reader();
-    let mut file = File::create(&path)?;
+    let mut file = File::options().write(true).create_new(true).open(&path)?;
     let mut hash = Sha256::new();
     let mut buf = vec![0; 256 * 1024];
     let mut total = 0u64;

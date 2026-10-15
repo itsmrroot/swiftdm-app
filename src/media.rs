@@ -252,7 +252,7 @@ fn postprocess_stage(line: &str) -> Option<&'static str> {
     let (status, pp) = rest.split_once('|').unwrap_or((rest, ""));
     (status == "started").then_some(match pp {
         "Merger" => "Joining video and sound",
-        "ExtractAudio" => "Converting to MP3",
+        "ExtractAudio" => "Converting the sound",
         "EmbedThumbnail" => "Adding the cover",
         "Metadata" | "FFmpegMetadata" => "Adding details",
         _ => "Finishing",
@@ -292,9 +292,17 @@ fn ytdlp() -> std::result::Result<PathBuf, MediaError> {
 }
 
 /// Reads what is behind `url` without downloading it.
-pub fn inspect(url: &str, cookies_from: Option<&str>, stop: &AtomicBool) -> std::result::Result<Found, MediaError> {
+pub fn inspect(
+    url: &str,
+    cookies_from: Option<&str>,
+    proxy: Option<&str>,
+    stop: &AtomicBool,
+) -> std::result::Result<Found, MediaError> {
     let mut cmd = base_command(&ytdlp()?);
     cmd.args(["-J", "--flat-playlist"]);
+    if let Some(p) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+        cmd.args(["--proxy", p]);
+    }
     if let Some(b) = cookies_from {
         cmd.args(["--cookies-from-browser", b]);
     }
@@ -692,6 +700,11 @@ fn run_collect(mut cmd: std::process::Command, stop: &AtomicBool, limit: Duratio
 /// Whether yt-dlp handles links to this site itself (rather than SwiftDM
 /// downloading the link as a file).
 pub fn is_media_site(url: &str) -> bool {
+    // Only links to the site itself (http or https), not any link that
+    // mentions it.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return false;
+    }
     const SITES: &[&str] = &[
         "youtube.com",
         "youtu.be",
@@ -738,11 +751,11 @@ pub enum Route {
 
 /// Decides how to download `url`, asking its server if the link alone
 /// does not tell.
-pub fn route(url: &str) -> Route {
+pub fn route(url: &str, net: &crate::http::Net) -> Route {
     if is_media_site(url) {
         return Route::Media;
     }
-    match crate::http::probe(url) {
+    match crate::http::probe_with(url, net) {
         Ok(p) if !p.is_web_page() => Route::File(p),
         // A web page (yt-dlp may find a video in it), or unreachable
         // (yt-dlp will say why).
@@ -803,7 +816,7 @@ mod tests {
         assert_eq!(e.kind, ErrorKind::NeedsJs);
         let e = classify("ERROR: [youtube] x: This video is unavailable\n");
         assert_eq!(e.kind, ErrorKind::Unavailable);
-        assert_eq!(postprocess_stage("[sdm-pp] started|ExtractAudio"), Some("Converting to MP3"));
+        assert_eq!(postprocess_stage("[sdm-pp] started|ExtractAudio"), Some("Converting the sound"));
         assert_eq!(postprocess_stage("[sdm-pp] finished|ExtractAudio"), None);
         assert_eq!(title_from_url("https://soundcloud.com/forss/paradigm-shift"), "paradigm shift");
         let e = classify("ERROR: [generic] something odd happened\n");

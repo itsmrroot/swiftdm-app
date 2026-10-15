@@ -55,7 +55,13 @@ async function send(msg, button) {
   $("empty").hidden = list.length > 0;
   for (const m of list) {
     const li = document.createElement("li");
-    const name = decodeURIComponent(new URL(m.url).pathname.split("/").pop() || m.url);
+    const last = new URL(m.url).pathname.split("/").pop() || m.url;
+    let name = last;
+    try {
+      name = decodeURIComponent(last);
+    } catch {
+      // A "%" that is not an escape: shown as it is.
+    }
     li.innerHTML = `<span class="name"></span><span class="meta"></span><button></button>`;
     li.querySelector(".name").textContent = name;
     li.querySelector(".name").title = m.url;

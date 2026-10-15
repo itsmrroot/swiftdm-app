@@ -1,22 +1,34 @@
 //! One SwiftDM at a time. Two would share the download list and write the
-//! same files; so a second start (a link opened with SwiftDM, a script, a
-//! browser add-on) hands its links to the running one and ends.
+//! same files; so a second start (a link opened with SwiftDM, a script, the
+//! browser extension's helper) hands its links to the running one and ends.
 //!
-//! The running app listens on a local port written to the app's folder; a
-//! later start (or the browser extension's helper) connects, sends
-//! `SWIFTDM 2` and one request per line — a link, or a JSON [`Incoming`] —
-//! and waits for `OK`.
+//! The running app listens on a local port. The port, its process id and a
+//! random secret are in a file only this user can read (`instance-port`,
+//! removed when the app ends). A sender proves it knows the secret, and so
+//! does the app in its answer — another user who takes over the port after
+//! SwiftDM ended gets neither links nor cookies:
+//!
+//! ```text
+//! → SWIFTDM 3 <nonce> <sha256(secret, nonce, "ask")>
+//! → one request per line (a JSON `Incoming`)
+//! ← OK <sha256(secret, nonce, "ok")> <seconds since the app's loop last ran> <1 if in front>
+//! ```
+//!
+//! The app takes the links whenever its loop runs (also while minimized);
+//! the answer comes at once, so nothing is handed over twice. When its loop
+//! has not run for a while although its window was in front, it is frozen:
+//! a new start offers to close it.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use eframe::egui;
-
-const HELLO: &str = "SWIFTDM 2";
+use sha2::{Digest, Sha256};
 
 /// A link to add, with what came along from the browser.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -42,26 +54,52 @@ impl Incoming {
     }
 }
 
+/// The app's loop has not run for this long while in front: frozen.
+const FROZEN_AFTER: i64 = 15;
+/// At most this much is read from one sender.
+const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
+
 fn port_file() -> PathBuf {
     swiftdm::paths::data_dir().join("instance-port")
 }
 
-/// A hand-over waiting for the app to take it.
-struct Delivery {
-    requests: Vec<Incoming>,
-    /// Told when the app has the requests: only then the sender hears OK.
-    taken: SyncSender<()>,
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// How long the app has to take a hand-over. It takes them in
-/// `App::logic`, which runs even while the window is minimized; an app that
-/// does not answer in this time is stuck.
-const TAKE_WITHIN: Duration = Duration::from_secs(4);
+/// Random hex (from the system's random hash keys, the time and the pid).
+fn random_hex() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = Sha256::new();
+    for _ in 0..4 {
+        let mut s = std::collections::hash_map::RandomState::new().build_hasher();
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        s.write_u128(nanos.as_nanos());
+        s.write_u32(std::process::id());
+        h.update(s.finish().to_le_bytes());
+    }
+    hex(&h.finalize())
+}
+
+fn proof(secret: &str, nonce: &str, what: &str) -> String {
+    hex(&Sha256::digest(format!("{secret}\n{nonce}\n{what}")))
+}
+
+/// What the app tells its listener.
+#[derive(Default)]
+struct Life {
+    /// When the app's loop last ran (seconds since 1970).
+    beat: AtomicI64,
+    /// Whether its window was in front then.
+    in_front: AtomicBool,
+}
 
 /// Links that later starts handed over. An empty list: just show the window.
 pub struct Inbox {
-    rx: Receiver<Delivery>,
+    rx: Receiver<Vec<Incoming>>,
     ctx: Arc<OnceLock<egui::Context>>,
+    life: Arc<Life>,
+    file: PathBuf,
 }
 
 impl Inbox {
@@ -70,11 +108,19 @@ impl Inbox {
         let _ = self.ctx.set(ctx.clone());
     }
 
-    /// The next hand-over, confirming it to its sender.
-    pub fn poll(&self) -> Option<Vec<Incoming>> {
-        let d = self.rx.try_recv().ok()?;
-        let _ = d.taken.send(());
-        Some(d.requests)
+    /// The next hand-over. Called from the app's loop, which so tells the
+    /// listener that the app works (`in_front`: its window is in front).
+    pub fn poll(&self, in_front: bool) -> Option<Vec<Incoming>> {
+        self.life.beat.store(swiftdm::util::now(), Ordering::Relaxed);
+        self.life.in_front.store(in_front, Ordering::Relaxed);
+        self.rx.try_recv().ok()
+    }
+}
+
+impl Drop for Inbox {
+    /// The app ends: nothing may answer on its port any more.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.file);
     }
 }
 
@@ -91,23 +137,23 @@ enum Handed {
     Yes,
     /// No SwiftDM is running (or something else uses the port now).
     NoOne,
-    /// A SwiftDM is running but does not answer (frozen); its process id.
-    Stuck(Option<u32>),
+    /// A SwiftDM took the links but its loop does not run: frozen.
+    Frozen(u32),
 }
 
 /// Hands `requests` to the running app (none: just show its window).
 /// Returns whether one was running and took them.
 pub fn send(requests: &[Incoming]) -> bool {
-    hand_over(requests) == Handed::Yes
+    hand_over_at(&port_file(), requests) != Handed::NoOne
 }
 
 /// Hands `links` to a running SwiftDM, or becomes the one others hand to.
 pub fn start(links: &[String]) -> Start {
     let requests: Vec<Incoming> = links.iter().map(|l| Incoming::link(l)).collect();
-    match hand_over(&requests) {
+    match hand_over_at(&port_file(), &requests) {
         Handed::Yes => return Start::Handed,
         Handed::NoOne => {}
-        Handed::Stuck(pid) => {
+        Handed::Frozen(pid) => {
             // A frozen SwiftDM would otherwise take every start silently.
             crate::i18n::set_language(crate::i18n::Language::System);
             let close = rfd::MessageDialog::new()
@@ -118,188 +164,203 @@ pub fn start(links: &[String]) -> Start {
                 ))
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show();
-            if close != rfd::MessageDialogResult::Yes {
+            if close != rfd::MessageDialogResult::Yes || !kill_swiftdm(pid) {
                 return Start::Handed;
-            }
-            if let Some(pid) = pid {
-                kill(pid);
             }
         }
     }
-    let (tx, rx) = channel::<Delivery>();
+    serve(&port_file())
+}
+
+/// Listens for hand-overs, announced in `file`.
+fn serve(file: &Path) -> Start {
+    let (tx, rx) = channel();
+    let life = Arc::new(Life { beat: AtomicI64::new(swiftdm::util::now()), in_front: AtomicBool::new(false) });
     let ctx: Arc<OnceLock<egui::Context>> = Arc::default();
-    let inbox = Inbox { rx, ctx: ctx.clone() };
+    let inbox = Inbox { rx, ctx: ctx.clone(), life: life.clone(), file: file.to_path_buf() };
     let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) else { return Start::First(inbox) };
     let Ok(addr) = listener.local_addr() else { return Start::First(inbox) };
-    let file = port_file();
+    let secret = random_hex();
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&file, format!("{} {}", addr.port(), std::process::id()));
-    std::thread::spawn(move || listen(listener, tx, ctx));
+    let _ = write_private(file, &format!("{} {} {secret}", addr.port(), std::process::id()));
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (tx, ctx, life, secret) = (tx.clone(), ctx.clone(), life.clone(), secret.clone());
+            // One at a time would let a slow sender hold up all others.
+            std::thread::spawn(move || answer(stream, &secret, &tx, &ctx, &life));
+        }
+    });
     Start::First(inbox)
 }
 
-/// Answers hand-overs: OK once the app has taken them.
-fn listen(listener: TcpListener, tx: std::sync::mpsc::Sender<Delivery>, ctx: Arc<OnceLock<egui::Context>>) {
-    for mut stream in listener.incoming().flatten() {
-        let Some(requests) = receive(&stream) else { continue };
-        let (taken, confirmed) = sync_channel(1);
-        if tx.send(Delivery { requests, taken }).is_err() {
-            return;
-        }
-        if let Some(ctx) = ctx.get() {
-            ctx.request_repaint();
-        }
-        // The app's loop does not run: say so, or the sender would take
-        // this for an older SwiftDM and start a second one.
-        let answer: &[u8] = if confirmed.recv_timeout(TAKE_WITHIN).is_ok() { b"OK\n" } else { b"STUCK\n" };
-        let _ = stream.write_all(answer);
+/// Writes `text` to `file`, readable by this user only.
+fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(file);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
     }
+    o.open(file)?.write_all(text.as_bytes())
 }
 
-/// Ends a frozen SwiftDM.
-fn kill(pid: u32) {
+/// One hand-over: checks the sender, queues its links and answers.
+fn answer(
+    mut stream: TcpStream,
+    secret: &str,
+    tx: &Sender<Vec<Incoming>>,
+    ctx: &OnceLock<egui::Context>,
+    life: &Life,
+) -> Option<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    let mut text = String::new();
+    (&stream).take(MAX_MESSAGE).read_to_string(&mut text).ok()?;
+    let (nonce, requests) = parse(&text, secret)?;
+    tx.send(requests).ok()?;
+    if let Some(ctx) = ctx.get() {
+        ctx.request_repaint();
+    }
+    let idle = swiftdm::util::now() - life.beat.load(Ordering::Relaxed);
+    let front = u8::from(life.in_front.load(Ordering::Relaxed));
+    stream.write_all(format!("OK {} {idle} {front}\n", proof(secret, &nonce, "ok")).as_bytes()).ok()
+}
+
+/// The nonce and requests of a hand-over from a sender that knows `secret`.
+fn parse(text: &str, secret: &str) -> Option<(String, Vec<Incoming>)> {
+    let mut lines = text.lines();
+    let mut hello = lines.next()?.split_whitespace();
+    let (Some("SWIFTDM"), Some("3"), Some(nonce), Some(p)) = (hello.next(), hello.next(), hello.next(), hello.next())
+    else {
+        return None;
+    };
+    if p != proof(secret, nonce, "ask") {
+        return None;
+    }
+    let requests = lines
+        .filter_map(|l| serde_json::from_str::<Incoming>(l.trim()).ok())
+        .filter(|r| swiftdm::util::is_link(&r.url))
+        .take(1000)
+        .collect();
+    Some((nonce.to_string(), requests))
+}
+
+/// Ends a frozen SwiftDM — only if `pid` really is one. False: it could
+/// not be ended.
+fn kill_swiftdm(pid: u32) -> bool {
     if pid == std::process::id() {
-        return;
+        return false;
     }
     #[cfg(unix)]
-    // SAFETY: plain signal to a process id.
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    {
+        let name = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .unwrap_or_default();
+        if !name.contains("swiftdm") {
+            return true; // gone already
+        }
+        // SAFETY: a plain signal to the process checked above.
+        if unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } != 0 {
+            return false;
+        }
     }
     #[cfg(windows)]
     {
-        let _ = swiftdm::tools::command("taskkill")
+        let list = swiftdm::tools::command("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .unwrap_or_default();
+        if !list.contains("swiftdm") {
+            return true;
+        }
+        let ended = swiftdm::tools::command("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ended {
+            return false;
+        }
     }
     std::thread::sleep(Duration::from_millis(500));
+    true
 }
 
-fn hand_over(requests: &[Incoming]) -> Handed {
-    hand_over_at(&port_file(), requests)
-}
-
-fn hand_over_at(file: &std::path::Path, requests: &[Incoming]) -> Handed {
-    match hand_over_as(file, requests, 2) {
-        // A running SwiftDM 1.1 or older closes on version 2: it knows only
-        // bare links.
-        Answer::Closed => match hand_over_as(file, requests, 1) {
-            Answer::Ok => Handed::Yes,
-            _ => Handed::NoOne,
-        },
-        Answer::Ok => Handed::Yes,
-        Answer::Silent(pid) => Handed::Stuck(pid),
-        Answer::Nobody => Handed::NoOne,
-    }
-}
-
-enum Answer {
-    Ok,
-    /// Connected, but closed without OK.
-    Closed,
-    /// Connected, but no answer in time.
-    Silent(Option<u32>),
-    Nobody,
-}
-
-fn hand_over_as(file: &std::path::Path, requests: &[Incoming], version: u8) -> Answer {
-    let Some(text) = std::fs::read_to_string(file).ok() else { return Answer::Nobody };
+fn hand_over_at(file: &Path, requests: &[Incoming]) -> Handed {
+    let Ok(text) = std::fs::read_to_string(file) else { return Handed::NoOne };
     let mut parts = text.split_whitespace();
-    let Some(port) = parts.next().and_then(|p| p.parse::<u16>().ok()) else { return Answer::Nobody };
-    let pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+    let (Some(port), Some(pid), Some(secret)) = (
+        parts.next().and_then(|p| p.parse::<u16>().ok()),
+        parts.next().and_then(|p| p.parse::<u32>().ok()),
+        parts.next(),
+    ) else {
+        return Handed::NoOne;
+    };
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return Answer::Nobody };
-    let _ = s.set_read_timeout(Some(TAKE_WITHIN + Duration::from_secs(1)));
-    let mut msg = format!("SWIFTDM {version}\n");
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return Handed::NoOne };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+    let nonce = random_hex();
+    let mut msg = format!("SWIFTDM 3 {nonce} {}\n", proof(secret, &nonce, "ask"));
     for r in requests {
-        if version == 1 {
-            msg.push_str(&r.url);
-        } else {
-            let Ok(line) = serde_json::to_string(r) else { return Answer::Nobody };
-            msg.push_str(&line);
-        }
+        let Ok(line) = serde_json::to_string(r) else { return Handed::NoOne };
+        msg.push_str(&line);
         msg.push('\n');
     }
     if s.write_all(msg.as_bytes()).and_then(|_| s.shutdown(std::net::Shutdown::Write)).is_err() {
-        return Answer::Closed;
+        return Handed::NoOne;
     }
-    let mut answer = String::new();
-    match s.read_to_string(&mut answer) {
-        // Something else may use the port now: only SwiftDM answers OK.
-        Ok(_) if answer.trim() == "OK" => Answer::Ok,
-        Ok(_) if answer.trim() == "STUCK" => Answer::Silent(pid),
-        Ok(_) => Answer::Closed,
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-            Answer::Silent(pid)
-        }
-        Err(_) => Answer::Closed,
+    let mut reply = String::new();
+    if BufReader::new(s).take(4096).read_line(&mut reply).is_err() {
+        return Handed::NoOne;
     }
-}
-
-/// The requests of one hand-over (not yet answered).
-fn receive(stream: &TcpStream) -> Option<Vec<Incoming>> {
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    let mut lines = BufReader::new(stream.try_clone().ok()?).lines().map_while(Result::ok);
-    // Version 1 (bare links) is still understood.
-    if !matches!(lines.next()?.trim(), "SWIFTDM 1" | HELLO) {
-        return None;
+    let mut r = reply.split_whitespace();
+    let (Some("OK"), Some(p)) = (r.next(), r.next()) else { return Handed::NoOne };
+    // Only the SwiftDM that wrote the file can answer this.
+    if p != proof(secret, &nonce, "ok") {
+        return Handed::NoOne;
     }
-    let requests: Vec<Incoming> = lines
-        .filter_map(|l| {
-            let l = l.trim();
-            let r = if l.starts_with('{') { serde_json::from_str(l).ok()? } else { Incoming::link(l) };
-            swiftdm::util::is_link(&r.url).then_some(r)
-        })
-        .take(1000)
-        .collect();
-    Some(requests)
+    let idle: i64 = r.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let in_front = r.next() == Some("1");
+    if idle > FROZEN_AFTER && in_front { Handed::Frozen(pid) } else { Handed::Yes }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
-    /// A running app with its port file. `answers`: whether its loop
-    /// takes hand-overs (a frozen app does not).
-    fn app(name: &str, answers: bool) -> PathBuf {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let file = std::env::temp_dir().join(format!("swiftdm-port-{name}-{}", std::process::id()));
-        std::fs::write(&file, format!("{} 4242", listener.local_addr().unwrap().port())).unwrap();
-        let (tx, rx) = channel();
-        let inbox = Inbox { rx, ctx: Arc::default() };
-        std::thread::spawn({
-            let ctx = inbox.ctx.clone();
-            move || listen(listener, tx, ctx)
-        });
-        std::thread::spawn(move || {
-            // The app's loop, polling now and then — or frozen.
-            for _ in 0..400 {
-                if answers {
-                    let _ = inbox.poll();
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        });
-        file
+    fn temp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("swiftdm-port-{name}-{}", std::process::id()))
     }
 
     #[test]
-    fn a_working_app_takes_the_links() {
-        let file = app("ok", true);
-        let r = hand_over_at(&file, &[Incoming::link("https://example.com/a.zip")]);
-        assert_eq!(r, Handed::Yes);
+    fn links_reach_the_running_app_once() {
+        let file = temp("ok");
+        let Start::First(inbox) = serve(&file) else { panic!() };
+        let link = Incoming::link("https://example.com/a.zip");
+        assert_eq!(hand_over_at(&file, std::slice::from_ref(&link)), Handed::Yes);
+        assert_eq!(inbox.poll(true), Some(vec![link]));
+        assert_eq!(inbox.poll(true), None);
+        drop(inbox);
+        assert!(!file.exists(), "the port file goes with the app");
     }
 
     #[test]
-    fn a_frozen_app_is_noticed() {
-        let file = app("stuck", false);
-        let r = hand_over_at(&file, &[Incoming::link("https://example.com/a.zip")]);
-        assert_eq!(r, Handed::Stuck(Some(4242)));
+    fn a_frozen_app_in_front_is_noticed_but_not_a_minimized_one() {
+        let file = temp("frozen");
+        let Start::First(inbox) = serve(&file) else { panic!() };
+        inbox.life.beat.store(swiftdm::util::now() - 60, Ordering::Relaxed);
+        inbox.life.in_front.store(true, Ordering::Relaxed);
+        assert!(matches!(hand_over_at(&file, &[]), Handed::Frozen(_)));
+        // Minimized (some systems pause the loop then): fine.
+        inbox.life.in_front.store(false, Ordering::Relaxed);
+        assert_eq!(hand_over_at(&file, &[]), Handed::Yes);
     }
 
     #[test]
@@ -307,37 +368,41 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let file = std::env::temp_dir().join(format!("swiftdm-port-none-{}", std::process::id()));
-        std::fs::write(&file, format!("{port} 1")).unwrap();
+        let file = temp("none");
+        std::fs::write(&file, format!("{port} 1 abc")).unwrap();
         assert_eq!(hand_over_at(&file, &[]), Handed::NoOne);
+        let _ = std::fs::remove_file(&file);
         assert_eq!(hand_over_at(Path::new("/nonexistent/port"), &[]), Handed::NoOne);
     }
 
     #[test]
-    fn requests_are_read() {
+    fn an_impostor_on_the_port_gets_nothing() {
+        // Someone else listens on the port the file names: it cannot prove
+        // it knows the secret, so nothing counts as handed over.
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || receive(&listener.accept().unwrap().0));
-        let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        s.write_all(
-            b"SWIFTDM 2\nhttps://example.com/a.zip\nnot a link\n{\"url\":\"https://y.org/v\",\"mode\":\"audio\"}\n",
-        )
-        .unwrap();
-        s.shutdown(std::net::Shutdown::Write).unwrap();
-        let got = server.join().unwrap().unwrap();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0], Incoming::link("https://example.com/a.zip"));
-        assert_eq!((got[1].url.as_str(), got[1].mode.as_str()), ("https://y.org/v", "audio"));
+        let file = temp("impostor");
+        std::fs::write(&file, format!("{port} 1 {}", random_hex())).unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = String::new();
+            let _ = (&s).take(1 << 20).read_to_string(&mut buf);
+            let _ = s.write_all(b"OK x 0 0\n");
+        });
+        assert_eq!(hand_over_at(&file, &[Incoming::link("https://example.com/a.zip")]), Handed::NoOne);
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]
-    fn strangers_are_ignored() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || receive(&listener.accept().unwrap().0));
-        let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        s.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
-        s.shutdown(std::net::Shutdown::Write).unwrap();
-        assert_eq!(server.join().unwrap(), None);
+    fn senders_without_the_secret_are_ignored() {
+        let secret = random_hex();
+        assert!(parse("GET / HTTP/1.1\r\n\r\n", &secret).is_none());
+        assert!(parse("SWIFTDM 3 n wrong\n{\"url\":\"https://x.org/a\"}\n", &secret).is_none());
+        let good = format!(
+            "SWIFTDM 3 n {}\n{{\"url\":\"https://x.org/a\",\"mode\":\"audio\"}}\nnot json\n",
+            proof(&secret, "n", "ask")
+        );
+        let (nonce, r) = parse(&good, &secret).unwrap();
+        assert_eq!((nonce.as_str(), r.len(), r[0].mode.as_str()), ("n", 1, "audio"));
     }
 }

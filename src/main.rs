@@ -140,7 +140,9 @@ fn parse_rate(s: &str) -> Result<u64> {
 /// `1:30-2:45` (or `90-165`, `1:02:03-1:05:00`) → seconds.
 fn parse_section(s: &str) -> Result<(u32, u32)> {
     let secs = |t: &str| -> Option<u32> {
-        t.trim().split(':').try_fold(0u32, |acc, part| Some(acc * 60 + part.trim().parse::<u32>().ok()?))
+        t.trim()
+            .split(':')
+            .try_fold(0u32, |acc, part| acc.checked_mul(60)?.checked_add(part.trim().parse::<u32>().ok()?))
     };
     let (a, b) = s.split_once('-').ok_or_else(|| anyhow::anyhow!("not a part: {s} (try 1:30-2:45)"))?;
     match (secs(a), secs(b)) {
@@ -255,7 +257,12 @@ fn get(args: Get) -> Result<()> {
             bail!("not a link: {url}");
         }
         let media = !args.file
-            && (media_wanted || (!media::looks_like_file(url) && matches!(media::route(url), media::Route::Media)));
+            && (media_wanted
+                || (!media::looks_like_file(url)
+                    && matches!(
+                        media::route(url, &swiftdm::http::Net { proxy: args.proxy.clone(), headers: Vec::new() }),
+                        media::Route::Media
+                    )));
         needs_media |= media;
         youtube |= media && swiftdm::util::host(url).contains("youtu");
         sources.push(if media { Source::Media(options.clone()) } else { Source::File });
@@ -280,7 +287,9 @@ fn get(args: Get) -> Result<()> {
         let mut links = vec![(url.clone(), None)];
         if matches!(source, Source::Media(_)) {
             let stop = AtomicBool::new(false);
-            if let Ok(Found::Playlist { title, entries }) = media::inspect(url, args.cookies.as_deref(), &stop) {
+            if let Ok(Found::Playlist { title, entries }) =
+                media::inspect(url, args.cookies.as_deref(), args.proxy.as_deref(), &stop)
+            {
                 eprintln!("{title}: {} items", entries.len());
                 links = entries.into_iter().map(|e| (e.url, Some(e.title))).collect();
             }
@@ -356,7 +365,7 @@ fn info(url: &str, cookies: Option<&str>) -> Result<()> {
         install_tool(Tool::YtDlp)?;
     }
     let stop = AtomicBool::new(false);
-    match media::inspect(url, cookies, &stop) {
+    match media::inspect(url, cookies, None, &stop) {
         Ok(Found::Single(i)) => {
             println!("{}", i.title);
             if !i.uploader.is_empty() {
