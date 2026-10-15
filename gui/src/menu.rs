@@ -38,6 +38,9 @@ pub enum Command {
     ZoomReset,
     Theme(ThemeChoice),
     Open(&'static str),
+    Minimize,
+    FullScreen,
+    Quit,
 }
 
 pub const PROJECT: &str = "https://github.com/itsmrroot/SwiftDM-release";
@@ -94,7 +97,111 @@ fn shortcuts(ctx: &egui::Context, out: &mut Vec<Command>) {
         if i.consume_key(Modifiers::NONE, Key::F1) {
             out.push(Command::Help);
         }
+        // macOS has these in its own menu (⌘Q, ⌃⌘F).
+        if !cfg!(target_os = "macos") {
+            if i.consume_shortcut(&KeyboardShortcut::new(cmd, Key::Q)) {
+                out.push(Command::Quit);
+            }
+            if i.consume_key(Modifiers::NONE, Key::F11) {
+                out.push(Command::FullScreen);
+            }
+            if i.consume_shortcut(&KeyboardShortcut::new(cmd_shift, Key::V)) {
+                out.push(Command::PasteLink);
+            }
+        }
     });
+}
+
+/// The menu bar inside the window, for Windows and Linux (which have no
+/// menu bar of their own): the same menus as on macOS. Returns the command
+/// chosen.
+pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice) -> Option<Command> {
+    use crate::i18n::tr;
+    let chosen = std::cell::Cell::new(None);
+    let item = |ui: &mut egui::Ui, label: &str, keys: &str, c: Command| {
+        let mut b = egui::Button::new(label);
+        if !keys.is_empty() {
+            b = b.shortcut_text(keys);
+        }
+        if ui.add(b).clicked() {
+            chosen.set(Some(c));
+            ui.close();
+        }
+    };
+    egui::MenuBar::new().ui(ui, |ui| {
+        ui.menu_button(tr("File"), |ui| {
+            item(ui, &format!("{}…", tr("New download")), "Ctrl+N", Command::NewDownload);
+            item(ui, tr("Download copied link"), "Ctrl+Shift+V", Command::PasteLink);
+            item(ui, tr("Import links from a file…"), "Ctrl+O", Command::ImportLinks);
+            ui.separator();
+            item(ui, tr("Open download folder"), "Ctrl+Shift+O", Command::OpenFolder);
+            ui.separator();
+            item(ui, &format!("{}…", tr("Settings")), "Ctrl+,", Command::Settings);
+            ui.separator();
+            item(ui, tr("Quit SwiftDM"), "Ctrl+Q", Command::Quit);
+        });
+        ui.menu_button(tr("Edit"), |ui| {
+            item(ui, tr("Undo"), "Ctrl+Z", Command::Undo);
+            item(ui, tr("Redo"), "Ctrl+Shift+Z", Command::Redo);
+            ui.separator();
+            item(ui, tr("Cut"), "Ctrl+X", Command::Cut);
+            item(ui, tr("Copy"), "Ctrl+C", Command::Copy);
+            item(ui, tr("Paste"), "Ctrl+V", Command::Paste);
+            item(ui, tr("Select All"), "Ctrl+A", Command::SelectAll);
+        });
+        ui.menu_button(tr("View"), |ui| {
+            let lists = [tr("All downloads"), tr("Downloading"), tr("Completed"), tr("Paused"), tr("Failed")];
+            for (n, l) in lists.iter().enumerate() {
+                item(ui, l, &format!("Ctrl+{}", n + 1), Command::Show(n));
+            }
+            ui.separator();
+            item(ui, tr("Actual Size"), "Ctrl+0", Command::ZoomReset);
+            item(ui, tr("Zoom In"), "Ctrl++", Command::ZoomIn);
+            item(ui, tr("Zoom Out"), "Ctrl+−", Command::ZoomOut);
+            ui.separator();
+            ui.menu_button(tr("Theme"), |ui| {
+                for t in ThemeChoice::ALL {
+                    if ui.selectable_label(theme == t, t.name()).clicked() {
+                        chosen.set(Some(Command::Theme(t)));
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            item(ui, tr("Enter Full Screen"), "F11", Command::FullScreen);
+        });
+        ui.menu_button(tr("Downloads"), |ui| {
+            item(ui, tr("Pause all"), "Ctrl+Shift+P", Command::PauseAll);
+            item(ui, tr("Continue all"), "Ctrl+Shift+R", Command::ResumeAll);
+            item(ui, tr("Clear completed"), "", Command::ClearCompleted);
+            ui.separator();
+            ui.menu_button(tr("When downloads are done"), |ui| {
+                for a in AfterDone::ALL {
+                    if ui.selectable_label(after_done == a, a.name()).clicked() {
+                        chosen.set(Some(Command::AfterDone(a)));
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            item(ui, &format!("{}…", tr("Add SwiftDM to your browser")), "", Command::AddToBrowser);
+        });
+        ui.menu_button(tr("Window"), |ui| {
+            item(ui, tr("Minimize"), "", Command::Minimize);
+            item(ui, tr("Enter Full Screen"), "F11", Command::FullScreen);
+        });
+        ui.menu_button(tr("Help"), |ui| {
+            item(ui, tr("SwiftDM Help"), "F1", Command::Help);
+            ui.separator();
+            item(ui, tr("What's new"), "", Command::Open(RELEASES));
+            item(ui, tr("Project page"), "", Command::Open(PROJECT));
+            item(ui, tr("Report a problem"), "", Command::Open(ISSUES));
+            ui.separator();
+            item(ui, tr("Check for Updates…"), "", Command::CheckUpdates);
+            item(ui, tr("About SwiftDM"), "", Command::About);
+        });
+    });
+    chosen.get()
 }
 
 #[cfg(target_os = "macos")]

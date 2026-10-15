@@ -621,6 +621,12 @@ impl App {
             Command::ZoomReset => self.settings.ui_scale = 1.0,
             Command::Theme(t) => self.settings.theme = t,
             Command::Open(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Command::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+            Command::FullScreen => {
+                let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+            }
+            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo | Command::Redo | Command::Cut | Command::Copy | Command::Paste | Command::SelectAll => {
                 crate::menu::edit(ctx, c)
             }
@@ -1379,6 +1385,22 @@ impl eframe::App for App {
             self.browser_seen = crate::browser::last_seen();
         }
 
+        // Windows and Linux have no menu bar of their own: one in the window.
+        // Development aid: SWIFTDM_WINDOW_MENU shows it on macOS too.
+        let window_menu =
+            !cfg!(target_os = "macos") || (cfg!(debug_assertions) && std::env::var_os("SWIFTDM_WINDOW_MENU").is_some());
+        if window_menu {
+            let (after_done, theme) = (self.power.after_done, self.settings.theme);
+            let chosen = egui::Panel::top("menubar")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::new().fill(p.sidebar).inner_margin(Margin::symmetric(8, 2)))
+                .show(ui, |ui| crate::menu::window_menu(ui, after_done, theme))
+                .inner;
+            if let Some(c) = chosen {
+                self.run(&ctx, c);
+            }
+        }
         egui::Panel::top("header")
             .exact_size(54.0)
             .resizable(false)
