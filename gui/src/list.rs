@@ -97,7 +97,16 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
                     ui.horizontal_centered(|ui| {
                         // Thumbnail or type icon.
                         let size = Vec2::new(84.0, 48.0);
-                        let tex = item.thumbnail.as_deref().and_then(|u| thumbs.get(ui.ctx(), u));
+                        // A saved picture is its own preview.
+                        let picture = if item.status == Status::Done && kind == FileKind::Image {
+                            item.path.as_deref()
+                        } else {
+                            None
+                        };
+                        let tex = match picture {
+                            Some(path) => thumbs.get_file(ui.ctx(), path),
+                            None => item.thumbnail.as_deref().and_then(|u| thumbs.get(ui.ctx(), u)),
+                        };
                         match tex {
                             Some(t) => {
                                 ui.add(
