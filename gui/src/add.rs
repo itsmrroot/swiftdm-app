@@ -652,7 +652,7 @@ fn file_card(ui: &mut Ui, p: &Palette, probe: &Probe, name: &mut String) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(size).color(p.weak));
                 ui.label(RichText::new("·").color(p.weak));
-                let color = if probe.resumable { p.success } else { p.warning };
+                let color = if probe.resumable { p.success } else { p.weak };
                 ui.label(RichText::new(how).color(color).size(13.0));
             });
         });

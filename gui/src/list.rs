@@ -171,6 +171,17 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
     action
 }
 
+/// An error as shown: translated, and in plain words also when it was
+/// saved by an older version with the system's own wording.
+pub fn friendly(error: &str) -> String {
+    let lower = error.to_lowercase();
+    let no_address = ["lookup address", "nodename nor servname", "name or service not known", "no such host"];
+    if no_address.iter().any(|m| lower.contains(m)) {
+        return i18n::engine("the address could not be found (check the link and your connection)");
+    }
+    i18n::engine(error)
+}
+
 fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
     // Built in logical order and reordered once, by `text::rich`.
     let size = |done: u64| match item.total {
@@ -194,7 +205,7 @@ fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
         },
         Status::Queued => (trl("Waiting for its turn").into(), p.weak),
         Status::Paused => (format!("{}  ·  {}", trl("Paused"), size(item.done)), p.warning),
-        Status::Failed => (item.error.as_deref().map_or_else(|| trl("Failed").into(), i18n::engine), p.danger),
+        Status::Failed => (item.error.as_deref().map_or_else(|| trl("Failed").into(), friendly), p.danger),
         Status::Done => {
             let mut parts = Vec::new();
             if let Some(t) = item.total {
@@ -210,15 +221,33 @@ fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
     ui.add(egui::Label::new(text::rich(&text).size(12.5).color(color)).truncate());
 }
 
+/// What "Open" does to a finished file: videos and music play, anything
+/// else opens in its program.
+fn open_icon(item: &Item) -> &'static str {
+    match item.kind() {
+        FileKind::Video | FileKind::Audio => icon::PLAY_CIRCLE,
+        _ => icon::ARROW_SQUARE_OUT,
+    }
+}
+
 fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
     let id = item.id;
     let mut action = None;
-    ui.menu_button(RichText::new(icon::DOTS_THREE_VERTICAL).size(18.0).color(p.weak), |ui| {
-        action = menu(ui, item);
-        if action.is_some() {
-            ui.close();
-        }
-    });
+    // Looks like the other buttons of the row (a bare symbol).
+    let more = egui::Button::new(RichText::new(icon::DOTS_THREE_VERTICAL).size(17.0).color(p.weak))
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(8))
+        .min_size(Vec2::splat(32.0));
+    egui::containers::menu::MenuButton::from_button(more)
+        .ui(ui, |ui| {
+            action = menu(ui, item);
+            if action.is_some() {
+                ui.close();
+            }
+        })
+        .0
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     match item.status {
         Status::Active | Status::Queued => {
             if theme::icon_button(ui, p, icon::PAUSE, tr("Pause"), None).clicked() {
@@ -239,7 +268,7 @@ fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
             if theme::icon_button(ui, p, icon::FOLDER_OPEN, tr("Show in folder"), None).clicked() {
                 action = Some(RowAction::Reveal(id));
             }
-            if theme::icon_button(ui, p, icon::PLAY_CIRCLE, tr("Open"), Some(p.accent)).clicked() {
+            if theme::icon_button(ui, p, open_icon(item), tr("Open"), Some(p.accent_text)).clicked() {
                 action = Some(RowAction::Open(id));
             }
         }
@@ -261,7 +290,7 @@ fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
         }
     };
     if item.status == Status::Done {
-        entry(ui, i18n::icon_label(icon::PLAY_CIRCLE, "Open"), RowAction::Open(id));
+        entry(ui, i18n::icon_label(open_icon(item), "Open"), RowAction::Open(id));
         entry(ui, i18n::icon_label(icon::FOLDER_OPEN, "Show in folder"), RowAction::Reveal(id));
         ui.separator();
     }
@@ -282,52 +311,57 @@ fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
     a
 }
 
-/// The four numbers above the list.
+/// The four numbers above the list, in one slim strip.
 pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
     let active = items.iter().filter(|i| i.status == Status::Active).count();
     let done: Vec<&Item> = items.iter().filter(|i| i.status == Status::Done).collect();
     let bytes: u64 = done.iter().filter_map(|i| i.total).sum();
-    let cards = [
-        (icon::DOWNLOAD_SIMPLE, tr("Downloading"), active.to_string(), p.accent),
+    let stats = [
+        (icon::DOWNLOAD_SIMPLE, tr("Downloading"), active.to_string(), p.accent_text),
         (icon::LIGHTNING, tr("Speed"), format_speed(speed), p.warning),
         (icon::CHECK_CIRCLE, tr("Completed"), done.len().to_string(), p.success),
         (icon::DATABASE, tr("Downloaded"), format_size(bytes), p.purple),
     ];
-    let gap = 10.0;
-    let w = ((ui.available_width() - gap * 3.0) / 4.0).max(120.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        for (glyph, label, value, color) in cards {
-            Frame::new()
-                .fill(p.card)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(12))
-                .inner_margin(Margin::symmetric(12, 10))
-                .show(ui, |ui| {
-                    ui.set_width(w - 26.0);
-                    ui.horizontal(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
-                        ui.painter().rect_filled(rect, CornerRadius::same(9), p.tint(color));
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            glyph,
-                            egui::FontId::proportional(18.0),
-                            color,
-                        );
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(theme::semibold(value, 16.5));
-                            ui.label(RichText::new(label).size(12.0).color(p.weak));
-                        });
-                    });
-                });
-        }
-    });
+    Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::symmetric(16, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // Four equal parts, each: symbol, number, what it is.
+            let part = ui.available_width() / 4.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (glyph, label, value, color) in stats {
+                    let used = ui
+                        .horizontal(|ui| {
+                            ui.label(RichText::new(glyph).size(18.0).color(color));
+                            ui.label(theme::semibold(value, 15.5));
+                            ui.label(RichText::new(label).size(12.5).color(p.weak));
+                        })
+                        .response
+                        .rect
+                        .width();
+                    ui.add_space((part - used - 6.0).max(10.0));
+                }
+            });
+        });
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_system_errors_are_shown_in_plain_words() {
+        let old =
+            "network error: io: failed to lookup address information: nodename nor servname provided, or not known";
+        assert!(friendly(old).to_lowercase().contains("address could not be found"));
+        assert_eq!(
+            friendly("the file is not there any more (HTTP 404)"),
+            i18n::engine("the file is not there any more (HTTP 404)")
+        );
+    }
+
     use super::*;
     use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
     use swiftdm::manager::Source;

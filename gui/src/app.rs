@@ -48,7 +48,6 @@ enum Filter {
     Done,
     Paused,
     Failed,
-    Kind(FileKind),
 }
 
 impl Filter {
@@ -59,7 +58,6 @@ impl Filter {
             Filter::Done => item.status == Status::Done,
             Filter::Paused => item.status == Status::Paused,
             Filter::Failed => item.status == Status::Failed,
-            Filter::Kind(k) => item.kind() == k,
         }
     }
 
@@ -70,7 +68,6 @@ impl Filter {
             Filter::Done => tr("Completed"),
             Filter::Paused => tr("Paused"),
             Filter::Failed => tr("Failed"),
-            Filter::Kind(k) => list::kind_name(k),
         }
     }
 }
@@ -102,6 +99,8 @@ pub struct App {
     manager: Manager,
     page: Page,
     filter: Filter,
+    /// Only this kind of file (besides the filter above).
+    kind_filter: Option<FileKind>,
     search: String,
     url: String,
     /// Links being added; the first one not in quick mode is shown.
@@ -195,6 +194,7 @@ impl App {
             manager,
             page: Page::Downloads,
             filter: Filter::All,
+            kind_filter: None,
             search: String::new(),
             url: String::new(),
             adds: Vec::new(),
@@ -435,6 +435,15 @@ impl App {
                 news.push((item.id, item.status, item.display_name().to_string(), item.error.clone()));
             }
         }
+        // Many failing together (no network, say) are one notice, not many.
+        let failed = news.iter().filter(|n| n.1 == Status::Failed).count();
+        if failed > 1 {
+            let first = news.iter().find(|n| n.1 == Status::Failed).and_then(|n| n.3.clone()).unwrap_or_default();
+            let detail = list::friendly(&first);
+            let title = i18n::trf("{n} downloads failed", &[("n", &failed)]);
+            self.toast(icon::WARNING_CIRCLE, p.danger, &title, &detail, ToastTarget::None);
+            news.retain(|n| n.1 != Status::Failed);
+        }
         for (id, status, name, error) in news {
             // In the background: the system tells too.
             if self.settings.notify && !ctx.input(|i| i.focused) {
@@ -451,7 +460,7 @@ impl App {
                     self.toast(icon::CHECK_CIRCLE, p.success, tr("Download complete"), &name, ToastTarget::Item(id))
                 }
                 Status::Failed => {
-                    let detail = format!("{name}\n{}", i18n::engine(&error.unwrap_or_default()));
+                    let detail = format!("{name}\n{}", list::friendly(&error.unwrap_or_default()));
                     self.toast(icon::WARNING_CIRCLE, p.danger, tr("Download failed"), &detail, ToastTarget::None)
                 }
                 _ => {}
@@ -745,11 +754,6 @@ impl App {
                         .corner_radius(CornerRadius::same(9))
                         .min_size(Vec2::new(0.0, 32.0))
                 };
-                // Help.
-                if ui.add(chip(icon::QUESTION.to_string(), self.page == Page::Help)).on_hover_text(tr("Help")).clicked()
-                {
-                    self.page = Page::Help;
-                }
                 // Quick settings: the ones changed now and then, without
                 // leaving the list.
                 let mut open_settings = false;
@@ -850,17 +854,20 @@ impl App {
                 });
                 // Downloads at once.
                 let n = self.settings.max_active;
-                egui::containers::menu::MenuButton::from_button(chip(format!("{}  {n}", icon::STACK), false))
-                    .ui(ui, |ui| {
-                        ui.label(RichText::new(tr("Downloads at the same time")).color(p.weak).size(12.5));
-                        for x in 1..=6 {
-                            if ui.selectable_label(n == x, x.to_string()).clicked() {
-                                self.settings.max_active = x;
-                            }
+                egui::containers::menu::MenuButton::from_button(chip(
+                    format!("{}  {}", icon::STACK, i18n::trf("{n} at once", &[("n", &n)])),
+                    false,
+                ))
+                .ui(ui, |ui| {
+                    ui.label(RichText::new(tr("Downloads at the same time")).color(p.weak).size(12.5));
+                    for x in 1..=6 {
+                        if ui.selectable_label(n == x, x.to_string()).clicked() {
+                            self.settings.max_active = x;
                         }
-                    })
-                    .0
-                    .on_hover_text(tr("Downloads at the same time"));
+                    }
+                })
+                .0
+                .on_hover_text(tr("Downloads at the same time"));
                 // Speed limit.
                 let kb = self.settings.speed_limit_kb;
                 let shown = if kb == 0 {
@@ -934,6 +941,9 @@ impl App {
                         let _ = std::fs::create_dir_all(&self.settings.download_dir);
                         let _ = swiftdm::util::open_path(&self.settings.download_dir);
                     }
+                    // The pages below, the lists above.
+                    ui.add_space(4.0);
+                    ui.add(egui::Separator::default().spacing(8.0));
                 });
             },
         );
@@ -952,33 +962,6 @@ impl App {
                 let n = count(f);
                 let badge = (n > 0).then(|| n.to_string());
                 if nav_item(ui, p, glyph, f.title(), on_list && self.filter == f, badge.as_deref()).clicked() {
-                    self.filter = f;
-                    self.page = Page::Downloads;
-                }
-            }
-            ui.add_space(8.0);
-            group_label(ui, p, tr("TYPE"));
-            for k in [
-                FileKind::Video,
-                FileKind::Audio,
-                FileKind::Image,
-                FileKind::Archive,
-                FileKind::Program,
-                FileKind::Document,
-            ] {
-                let f = Filter::Kind(k);
-                let n = count(f);
-                let badge = (n > 0).then(|| n.to_string());
-                if nav_item(
-                    ui,
-                    p,
-                    list::kind_icon(k),
-                    list::kind_name(k),
-                    on_list && self.filter == f,
-                    badge.as_deref(),
-                )
-                .clicked()
-                {
                     self.filter = f;
                     self.page = Page::Downloads;
                 }
@@ -1090,6 +1073,7 @@ impl App {
         let shown: Vec<&Item> = items
             .iter()
             .filter(|i| self.filter.matches(i))
+            .filter(|i| self.kind_filter.is_none_or(|k| i.kind() == k))
             .filter(|i| {
                 let q = self.search.trim().to_lowercase();
                 q.is_empty() || i.display_name().to_lowercase().contains(&q) || i.url.to_lowercase().contains(&q)
@@ -1123,6 +1107,29 @@ impl App {
                         .hint_text(icon_label(icon::MAGNIFYING_GLASS, "Search"))
                         .desired_width(200.0),
                 );
+                // Only one kind of file: video, music, pictures, ….
+                let label = match self.kind_filter {
+                    Some(k) => format!("{}  {}", list::kind_icon(k), list::kind_name(k)),
+                    None => icon_label(icon::FUNNEL, "All types"),
+                };
+                egui::containers::menu::MenuButton::new(label).ui(ui, |ui| {
+                    ui.selectable_value(&mut self.kind_filter, None, tr("All types"));
+                    for k in [
+                        FileKind::Video,
+                        FileKind::Audio,
+                        FileKind::Image,
+                        FileKind::Archive,
+                        FileKind::Program,
+                        FileKind::Document,
+                        FileKind::Other,
+                    ] {
+                        let n = items.iter().filter(|i| i.kind() == k).count();
+                        if n > 0 || self.kind_filter == Some(k) {
+                            let text = format!("{}  {}  ({n})", list::kind_icon(k), list::kind_name(k));
+                            ui.selectable_value(&mut self.kind_filter, Some(k), text);
+                        }
+                    }
+                });
             });
         });
         ui.add_space(8.0);
@@ -1479,7 +1486,8 @@ impl eframe::App for App {
                     let action = egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.set_max_width(ui.available_width().min(860.0));
+                            // About 70 characters to a line.
+                            ui.set_max_width(ui.available_width().min(780.0));
                             crate::help::page(ui, &p)
                         })
                         .inner;
@@ -1533,7 +1541,7 @@ fn group_label(ui: &mut Ui, p: &Palette, text: &str) {
 }
 
 fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, badge: Option<&str>) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();

@@ -760,7 +760,25 @@ fn net_error(e: ureq::Error) -> anyhow::Error {
         ureq::Error::HostNotFound => anyhow!("the address could not be found (check the link and your connection)"),
         ureq::Error::ConnectionFailed => anyhow!("could not connect to the server"),
         ureq::Error::BadUri(_) => anyhow!("this is not a valid link"),
+        ureq::Error::Io(e) => io_error(&e),
         e => anyhow!("network error: {e}"),
+    }
+}
+
+/// An error of the connection in plain words (the system's own wording
+/// differs on every system, and is no help to most people).
+fn io_error(e: &std::io::Error) -> anyhow::Error {
+    use std::io::ErrorKind::*;
+    let text = e.to_string().to_lowercase();
+    let no_address = ["lookup address", "nodename nor servname", "name or service not known", "no such host", "dns"];
+    if no_address.iter().any(|m| text.contains(m)) {
+        return anyhow!("the address could not be found (check the link and your connection)");
+    }
+    match e.kind() {
+        ConnectionRefused | NotConnected | AddrNotAvailable => anyhow!("could not connect to the server"),
+        TimedOut | WouldBlock => anyhow!("the server did not answer in time"),
+        ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof => anyhow!("the connection was lost ({e})"),
+        _ => anyhow!("network error: {e}"),
     }
 }
 
@@ -846,6 +864,19 @@ fn with_extension_for(name: &str, content_type: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn connection_errors_are_in_plain_words() {
+        use std::io::{Error, ErrorKind};
+        let msg = |e: Error| io_error(&e).to_string();
+        let dns = Error::other("failed to lookup address information: nodename nor servname provided, or not known");
+        assert_eq!(msg(dns), "the address could not be found (check the link and your connection)");
+        assert_eq!(msg(Error::from(ErrorKind::ConnectionRefused)), "could not connect to the server");
+        assert_eq!(msg(Error::from(ErrorKind::TimedOut)), "the server did not answer in time");
+        assert!(msg(Error::from(ErrorKind::ConnectionReset)).starts_with("the connection was lost ("));
+        assert!(msg(Error::other("odd")).starts_with("network error: "));
+    }
+
     use super::*;
 
     #[test]

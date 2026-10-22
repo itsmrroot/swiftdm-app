@@ -173,18 +173,27 @@ fn browser_choices() -> Vec<(&'static str, &'static str)> {
 }
 
 fn row(ui: &mut Ui, p: &Palette, label: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
+    // Label and controls start on the same line; every row has the same
+    // space below it.
+    ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(260.0);
             ui.spacing_mut().item_spacing.y = 1.0;
+            ui.add_space(5.0);
             ui.label(RichText::new(label).size(14.5));
             if !hint.is_empty() {
                 theme::paragraph(ui, hint, 12.5, p.weak);
             }
         });
-        add(ui);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                add(ui);
+            });
+        });
     });
-    ui.add_space(8.0);
+    ui.add_space(12.0);
 }
 
 /// The tabs of the Settings page.
@@ -308,7 +317,7 @@ fn general(ui: &mut Ui, p: &Palette, s: &mut Settings, updater: &mut Updater) {
         let opts: Vec<(ThemeChoice, &str)> = ThemeChoice::ALL.iter().map(|t| (*t, t.name())).collect();
         theme::segmented(ui, p, &mut s.theme, &opts);
     });
-    row(ui, p, tr("Colour"), "", |ui| {
+    row(ui, p, tr("Color"), "", |ui| {
         for a in Accent::ALL {
             let selected = s.accent == a;
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());

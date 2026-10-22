@@ -31,7 +31,7 @@ impl ThemeChoice {
 
     pub fn name(self) -> &'static str {
         match self {
-            ThemeChoice::System => i18n::tr("Like the system"),
+            ThemeChoice::System => i18n::tr("Automatic"),
             ThemeChoice::Light => i18n::tr("Light"),
             ThemeChoice::Dark => i18n::tr("Dark"),
             ThemeChoice::Night => i18n::tr("Night"),
@@ -442,14 +442,20 @@ pub fn section_title(ui: &mut Ui, p: &Palette, icon: &str, title: &str) {
 }
 
 pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str, enabled: bool) -> Response {
-    let fill = if enabled { p.accent_fill } else { p.accent_fill.gamma_multiply(0.4) };
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(semibold(text, 15.0).color(p.on_accent))
+    // Not faded when nothing can be done yet: a clear "not yet" (a calm
+    // fill, readable text), not a button that looks broken.
+    let (fill, color, stroke) = if enabled {
+        (p.accent_fill, p.on_accent, Stroke::NONE)
+    } else {
+        (p.card_alt, p.weak, Stroke::new(1.0, p.border))
+    };
+    ui.add(
+        egui::Button::new(semibold(text, 15.0).color(color))
             .fill(fill)
-            .stroke(Stroke::NONE)
+            .stroke(stroke)
             .corner_radius(CornerRadius::same(10))
-            .min_size(Vec2::new(0.0, 40.0)),
+            .min_size(Vec2::new(0.0, 40.0))
+            .sense(if enabled { egui::Sense::click() } else { egui::Sense::hover() }),
     )
 }
 
