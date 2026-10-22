@@ -3,7 +3,7 @@
   "name": "__MSG_name__",
   "short_name": "SwiftDM",
   "description": "__MSG_description__",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "default_locale": "en",
   "author": "Bashar Salmo",
   "homepage_url": "https://github.com/itsmrroot/SwiftDM-release",

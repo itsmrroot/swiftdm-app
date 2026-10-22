@@ -88,6 +88,16 @@ pub struct Palette {
     pub text: Color32,
     pub weak: Color32,
     pub accent: Color32,
+    /// The accent as the fill of a button, and the text on it: always at
+    /// least 4.5:1 (see [`solid`]).
+    pub accent_fill: Color32,
+    pub on_accent: Color32,
+    /// The accent as text on cards: lightened (dark themes) or darkened
+    /// (light theme) to be at least 4.5:1.
+    pub accent_text: Color32,
+    /// Danger as the fill of a button, and the text on it.
+    pub danger_fill: Color32,
+    pub on_danger: Color32,
     pub success: Color32,
     pub warning: Color32,
     pub danger: Color32,
@@ -97,7 +107,21 @@ pub struct Palette {
 impl Palette {
     /// `night` only applies to the dark palette.
     pub fn new(dark: bool, night: bool, accent: Accent) -> Self {
+        let mut p = Self::base(dark, night, accent);
+        let (accent_fill, on_accent) = solid(p.accent);
+        let (danger_fill, on_danger) = solid(p.danger);
+        p.accent_fill = accent_fill;
+        p.on_accent = on_accent;
+        p.danger_fill = danger_fill;
+        p.on_danger = on_danger;
+        // Against the least contrasting surface (cards, the page, raised parts).
+        p.accent_text = readable_on(p.accent, p.card_alt, dark);
+        p
+    }
+
+    fn base(dark: bool, night: bool, accent: Accent) -> Self {
         let accent = accent.color();
+        let unset = Color32::TRANSPARENT;
         if dark && night {
             Self {
                 dark,
@@ -107,11 +131,16 @@ impl Palette {
                 card_alt: Color32::from_rgb(13, 13, 34),
                 border: Color32::from_rgb(24, 24, 62),
                 text: Color32::from_rgb(214, 214, 255),
-                weak: Color32::from_rgb(116, 116, 178),
+                weak: Color32::from_rgb(126, 126, 188),
                 accent,
+                accent_fill: unset,
+                on_accent: unset,
+                accent_text: unset,
+                danger_fill: unset,
+                on_danger: unset,
                 success: Color32::from_rgb(16, 185, 129),
                 warning: Color32::from_rgb(245, 158, 11),
-                danger: Color32::from_rgb(239, 68, 68),
+                danger: Color32::from_rgb(248, 113, 113),
                 purple: Color32::from_rgb(168, 85, 247),
             }
         } else if dark {
@@ -125,9 +154,14 @@ impl Palette {
                 text: Color32::from_rgb(234, 234, 248),
                 weak: Color32::from_rgb(136, 136, 176),
                 accent,
+                accent_fill: unset,
+                on_accent: unset,
+                accent_text: unset,
+                danger_fill: unset,
+                on_danger: unset,
                 success: Color32::from_rgb(34, 197, 94),
                 warning: Color32::from_rgb(245, 158, 11),
-                danger: Color32::from_rgb(239, 68, 68),
+                danger: Color32::from_rgb(248, 113, 113),
                 purple: Color32::from_rgb(168, 85, 247),
             }
         } else {
@@ -141,9 +175,14 @@ impl Palette {
                 text: Color32::from_rgb(24, 24, 42),
                 weak: Color32::from_rgb(96, 96, 140),
                 accent,
-                success: Color32::from_rgb(22, 163, 74),
-                warning: Color32::from_rgb(217, 119, 6),
-                danger: Color32::from_rgb(220, 38, 38),
+                accent_fill: unset,
+                on_accent: unset,
+                accent_text: unset,
+                danger_fill: unset,
+                on_danger: unset,
+                success: Color32::from_rgb(20, 112, 52),
+                warning: Color32::from_rgb(165, 75, 8),
+                danger: Color32::from_rgb(190, 30, 30),
                 purple: Color32::from_rgb(147, 51, 234),
             }
         }
@@ -153,6 +192,52 @@ impl Palette {
     pub fn tint(&self, c: Color32) -> Color32 {
         c.gamma_multiply(if self.dark { 0.16 } else { 0.10 })
     }
+}
+
+/// The WCAG contrast ratio of two opaque colors.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let l = |c: Color32| {
+        let f = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    };
+    let (la, lb) = (l(a), l(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Text on a solid color: the fill and the text color for a button of
+/// `color`, at least 4.5:1. White text on a slightly darker fill where that
+/// is enough (blue, rose, indigo); dark text on bright colors (emerald,
+/// orange), which would have to be made much darker for white.
+pub fn solid(color: Color32) -> (Color32, Color32) {
+    const DARK_TEXT: Color32 = Color32::from_rgb(16, 16, 28);
+    let mut fill = color;
+    for _ in 0..6 {
+        if contrast(Color32::WHITE, fill) >= 4.5 {
+            return (fill, Color32::WHITE);
+        }
+        fill = blend(fill, Color32::BLACK, 0.04);
+    }
+    if contrast(DARK_TEXT, color) >= 4.5 {
+        return (color, DARK_TEXT);
+    }
+    while contrast(Color32::WHITE, fill) < 4.5 {
+        fill = blend(fill, Color32::BLACK, 0.04);
+    }
+    (fill, Color32::WHITE)
+}
+
+/// `color` moved towards white (`dark`) or black until it is at least 4.5:1
+/// on `bg`: for text in the accent color.
+pub fn readable_on(color: Color32, bg: Color32, dark: bool) -> Color32 {
+    let to = if dark { Color32::WHITE } else { Color32::BLACK };
+    let mut c = color;
+    while contrast(c, bg) < 4.5 && c != to {
+        c = blend(c, to, 0.06);
+    }
+    c
 }
 
 pub const SEMIBOLD: &str = "semibold";
@@ -285,7 +370,7 @@ fn visuals(p: &Palette) -> Visuals {
     v.menu_corner_radius = r;
     v.extreme_bg_color = if p.dark { blend(p.bg, Color32::BLACK, 0.3) } else { Color32::WHITE };
     v.faint_bg_color = p.card_alt;
-    v.hyperlink_color = p.accent;
+    v.hyperlink_color = p.accent_text;
     v.selection.bg_fill = blend(p.card, p.accent, if p.dark { 0.38 } else { 0.22 });
     v.selection.stroke = Stroke::new(1.0, p.text);
     v.override_text_color = Some(p.text);
@@ -357,10 +442,10 @@ pub fn section_title(ui: &mut Ui, p: &Palette, icon: &str, title: &str) {
 }
 
 pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str, enabled: bool) -> Response {
-    let fill = if enabled { p.accent } else { p.accent.gamma_multiply(0.4) };
+    let fill = if enabled { p.accent_fill } else { p.accent_fill.gamma_multiply(0.4) };
     ui.add_enabled(
         enabled,
-        egui::Button::new(semibold(text, 15.0).color(Color32::WHITE))
+        egui::Button::new(semibold(text, 15.0).color(p.on_accent))
             .fill(fill)
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(10))
@@ -408,9 +493,9 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, p: &Palette, value: &mut T, o
             for (v, label) in options {
                 let on = *value == *v;
                 let text =
-                    if on { semibold(*label, 14.0).color(Color32::WHITE) } else { RichText::new(*label).size(14.0) };
+                    if on { semibold(*label, 14.0).color(p.on_accent) } else { RichText::new(*label).size(14.0) };
                 let b = egui::Button::new(text)
-                    .fill(if on { p.accent } else { Color32::TRANSPARENT })
+                    .fill(if on { p.accent_fill } else { Color32::TRANSPARENT })
                     .stroke(Stroke::NONE)
                     .corner_radius(CornerRadius::same(8))
                     .min_size(Vec2::new(0.0, 30.0));
@@ -503,6 +588,45 @@ pub fn bar(ui: &mut Ui, p: &Palette, fraction: Option<f32>, color: Color32, widt
                 painter.rect_filled(r, CornerRadius::same(3), color);
             }
             ui.ctx().request_repaint();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every accent in every theme: text on buttons, accent text, and the
+    /// status colors as text on cards and on their own tint are readable
+    /// (WCAG AA, 4.5:1 for text up to 17 pt).
+    #[test]
+    fn colors_are_readable() {
+        for (dark, night) in [(true, true), (true, false), (false, false)] {
+            for accent in Accent::ALL {
+                let p = Palette::new(dark, night, accent);
+                let who = format!("{accent:?} dark={dark} night={night}");
+                assert!(contrast(p.on_accent, p.accent_fill) >= 4.5, "button text, {who}");
+                assert!(contrast(p.on_danger, p.danger_fill) >= 4.5, "delete button, {who}");
+                assert!(contrast(p.accent_text, p.card) >= 4.5, "accent text on card, {who}");
+                assert!(contrast(p.accent_text, p.bg) >= 4.5, "accent text on background, {who}");
+                assert!(contrast(p.accent_text, p.card_alt) >= 4.5, "accent text on raised parts, {who}");
+                // A button color stays recognizably the accent.
+                let (a, b) =
+                    (p.accent.r() as i32 - p.accent_fill.r() as i32, p.accent.b() as i32 - p.accent_fill.b() as i32);
+                assert!(a.abs() < 80 && b.abs() < 80, "button color too far from the accent, {who}");
+            }
+            let p = Palette::new(dark, night, Accent::Indigo);
+            for (name, c) in [("success", p.success), ("warning", p.warning), ("danger", p.danger)] {
+                assert!(contrast(c, p.card) >= 4.5, "{name} on card, dark={dark} night={night}");
+                assert!(
+                    contrast(c, blend(p.card, c, if dark { 0.16 } else { 0.10 })) >= 4.5,
+                    "{name} on its tint, dark={dark} night={night}"
+                );
+            }
+            for bg in [p.bg, p.card, p.card_alt, p.sidebar] {
+                assert!(contrast(p.text, bg) >= 7.0, "text, dark={dark} night={night}");
+                assert!(contrast(p.weak, bg) >= 4.5, "weak text, dark={dark} night={night}");
+            }
         }
     }
 }

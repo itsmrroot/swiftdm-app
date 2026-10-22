@@ -739,7 +739,7 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let chip = |text: String, on: bool| {
-                    egui::Button::new(RichText::new(text).size(13.5).color(if on { p.accent } else { p.text }))
+                    egui::Button::new(RichText::new(text).size(13.5).color(if on { p.accent_text } else { p.text }))
                         .fill(if on { p.tint(p.accent) } else { p.card })
                         .stroke(Stroke::new(1.0, if on { p.accent.gamma_multiply(0.6) } else { p.border }))
                         .corner_radius(CornerRadius::same(9))
@@ -1160,7 +1160,7 @@ impl App {
                 ui.vertical(|ui| {
                     ui.label(theme::semibold("SwiftDM", 30.0));
                     ui.label(RichText::new(i18n::trf("Version {version}", &[("version", &update::current())])).color(p.weak));
-                    ui.label(RichText::new("Powered by Bashar Salmo").color(p.accent));
+                    ui.label(RichText::new("Powered by Bashar Salmo").color(p.accent_text));
                 });
             });
             ui.add_space(14.0);
@@ -1336,8 +1336,8 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(theme::semibold(tr("Delete"), 14.5).color(Color32::WHITE))
-                            .fill(p.danger)
+                        egui::Button::new(theme::semibold(tr("Delete"), 14.5).color(p.on_danger))
+                            .fill(p.danger_fill)
                             .min_size(Vec2::new(0.0, 36.0)),
                     )
                     .clicked()
@@ -1479,7 +1479,7 @@ impl eframe::App for App {
                     let action = egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.set_max_width(860.0);
+                            ui.set_max_width(ui.available_width().min(860.0));
                             crate::help::page(ui, &p)
                         })
                         .inner;

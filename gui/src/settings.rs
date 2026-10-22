@@ -250,13 +250,13 @@ pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Con
             let (glyph, label) = t.label();
             let on = page.tab == t;
             let text = if on {
-                theme::semibold(format!("{glyph}  {label}"), 14.0).color(egui::Color32::WHITE)
+                theme::semibold(format!("{glyph}  {label}"), 14.0).color(p.on_accent)
             } else {
                 RichText::new(format!("{glyph}  {label}")).size(14.0)
             };
             let b = egui::Button::new(text)
-                .fill(if on { p.accent } else { p.card })
-                .stroke(egui::Stroke::new(1.0, if on { p.accent } else { p.border }))
+                .fill(if on { p.accent_fill } else { p.card })
+                .stroke(egui::Stroke::new(1.0, if on { p.accent_fill } else { p.border }))
                 .corner_radius(egui::CornerRadius::same(9))
                 .min_size(egui::vec2(0.0, 32.0));
             if ui.add(b).clicked() {
@@ -266,7 +266,9 @@ pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Con
     });
     ui.add_space(12.0);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.set_max_width(860.0);
+        // At most 860 wide, and never wider than the window: set_max_width
+        // alone would also make it wider than the room there is.
+        ui.set_max_width(ui.available_width().min(860.0));
         theme::card(ui, p, |ui| {
             ui.set_width(ui.available_width());
             match page.tab {
@@ -474,7 +476,7 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
     ui.add_space(8.0);
     let num = |ui: &mut Ui, n: usize, text: &str| {
         ui.horizontal_top(|ui| {
-            ui.label(theme::semibold(format!("{n}."), 14.5).color(p.accent));
+            ui.label(theme::semibold(format!("{n}."), 14.5).color(p.accent_text));
             theme::paragraph(ui, text, 14.5, p.text);
         });
     };

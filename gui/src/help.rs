@@ -39,7 +39,7 @@ fn text(ui: &mut Ui, p: &Palette, t: &str) {
 fn steps(ui: &mut Ui, p: &Palette, items: &[&str]) {
     for (n, t) in items.iter().enumerate() {
         ui.horizontal_top(|ui| {
-            ui.label(theme::semibold(format!("{}.", n + 1), 14.5).color(p.accent));
+            ui.label(theme::semibold(format!("{}.", n + 1), 14.5).color(p.accent_text));
             theme::paragraph(ui, t, 14.5, p.text);
         });
     }
@@ -48,7 +48,7 @@ fn steps(ui: &mut Ui, p: &Palette, items: &[&str]) {
 fn keys(ui: &mut Ui, p: &Palette, rows: &[(&str, &str)]) {
     egui::Grid::new(ui.next_auto_id()).num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
         for (k, what) in rows {
-            ui.label(RichText::new(*k).monospace().color(p.accent));
+            ui.label(RichText::new(*k).monospace().color(p.accent_text));
             ui.label(*what);
             ui.end_row();
         }

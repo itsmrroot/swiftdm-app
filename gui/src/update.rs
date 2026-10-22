@@ -473,7 +473,7 @@ impl Updater {
                 ui.label(RichText::new(tr("Checking for updates…")).color(p.weak));
             } else if let Some(version) = self.available() {
                 let text = trf("Version {version} is available.", &[("version", &version)]);
-                if ui.link(RichText::new(text).color(p.accent)).clicked() {
+                if ui.link(RichText::new(text).color(p.accent_text)).clicked() {
                     self.dialog = true;
                 }
             } else if self.latest {
