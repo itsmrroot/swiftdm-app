@@ -247,8 +247,8 @@ impl Power {
         egui::Modal::new(egui::Id::new("after-done")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(self.after_done.icon()).size(26.0).color(p.accent));
-                ui.label(theme::semibold(tr("All downloads are finished"), 17.0));
+                ui.label(RichText::new(self.after_done.icon()).size(theme::scale::ICON_XL).color(p.accent));
+                ui.label(theme::semibold(tr("All downloads are finished"), theme::scale::LEAD));
             });
             ui.add_space(6.0);
             let text = match self.after_done {
@@ -256,7 +256,7 @@ impl Power {
                 AfterDone::ShutDown => trf("The computer shuts down in {n} s.", &[("n", &left)]),
                 _ => trf("SwiftDM closes in {n} s.", &[("n", &left)]),
             };
-            ui.label(RichText::new(text).size(15.0));
+            ui.label(RichText::new(text).size(theme::scale::BODY));
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if theme::primary_button(ui, p, &format!("  {}  ", tr("Now")), true).clicked() {

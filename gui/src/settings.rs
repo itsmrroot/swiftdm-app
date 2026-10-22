@@ -22,6 +22,8 @@ pub struct Settings {
     pub language: Language,
     pub theme: ThemeChoice,
     pub accent: Accent,
+    /// Translucent surfaces on a soft colored background.
+    pub glass: bool,
     pub ui_scale: f32,
     // Downloads
     pub download_dir: PathBuf,
@@ -72,6 +74,7 @@ impl Default for Settings {
             language: Language::System,
             theme: ThemeChoice::System,
             accent: Accent::Indigo,
+            glass: true,
             ui_scale: 1.0,
             download_dir: swiftdm::paths::default_download_dir(),
             max_active: 3,
@@ -180,7 +183,7 @@ fn row(ui: &mut Ui, p: &Palette, label: &str, hint: &str, add: impl FnOnce(&mut 
             ui.set_width(260.0);
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.add_space(5.0);
-            ui.label(RichText::new(label).size(14.5));
+            ui.label(RichText::new(label).size(theme::scale::BODY));
             if !hint.is_empty() {
                 theme::paragraph(ui, hint, 12.5, p.weak);
             }
@@ -259,9 +262,9 @@ pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Con
             let (glyph, label) = t.label();
             let on = page.tab == t;
             let text = if on {
-                theme::semibold(format!("{glyph}  {label}"), 14.0).color(p.on_accent)
+                theme::semibold(format!("{glyph}  {label}"), theme::scale::BODY).color(p.on_accent)
             } else {
-                RichText::new(format!("{glyph}  {label}")).size(14.0)
+                RichText::new(format!("{glyph}  {label}")).size(theme::scale::BODY)
             };
             let b = egui::Button::new(text)
                 .fill(if on { p.accent_fill } else { p.card })
@@ -329,6 +332,9 @@ fn general(ui: &mut Ui, p: &Palette, s: &mut Settings, updater: &mut Updater) {
                 s.accent = a;
             }
         }
+    });
+    row(ui, p, tr("Glass look"), "", |ui| {
+        ui.checkbox(&mut s.glass, tr("Frosted surfaces on a soft background"));
     });
     row(ui, p, tr("Interface size"), trl("Also Ctrl/⌘ with + and −."), |ui| {
         ui.add(
@@ -485,7 +491,7 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
     ui.add_space(8.0);
     let num = |ui: &mut Ui, n: usize, text: &str| {
         ui.horizontal_top(|ui| {
-            ui.label(theme::semibold(format!("{n}."), 14.5).color(p.accent_text));
+            ui.label(theme::semibold(format!("{n}."), theme::scale::BODY).color(p.accent_text));
             theme::paragraph(ui, text, 14.5, p.text);
         });
     };
@@ -551,7 +557,7 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
     });
     if let Some((ok, msg)) = &page.message {
         ui.add_space(4.0);
-        ui.label(RichText::new(msg).color(if *ok { p.weak } else { p.danger }).size(12.5));
+        ui.label(RichText::new(msg).color(if *ok { p.weak } else { p.danger }).size(theme::scale::CAPTION));
     }
 }
 

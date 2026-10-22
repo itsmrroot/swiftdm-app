@@ -87,7 +87,7 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
     let resp = ui
         .scope_builder(egui::UiBuilder::new().id_salt(("row", item.id)).sense(Sense::click()), |ui| {
             Frame::new()
-                .fill(p.card)
+                .fill(p.surface())
                 .stroke(Stroke::new(1.0, p.border))
                 .corner_radius(CornerRadius::same(12))
                 .inner_margin(Margin::symmetric(12, 10))
@@ -122,7 +122,7 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     kind_icon(kind),
-                                    egui::FontId::proportional(24.0),
+                                    egui::FontId::proportional(theme::scale::ICON_LG),
                                     c,
                                 );
                             }
@@ -136,7 +136,8 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
                             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                                 ui.spacing_mut().item_spacing.y = 4.0;
                                 ui.add(
-                                    egui::Label::new(text::rich(item.display_name()).size(14.5).strong()).truncate(),
+                                    egui::Label::new(text::rich(item.display_name()).size(theme::scale::BODY).strong())
+                                        .truncate(),
                                 );
                                 status_line(ui, p, item);
                                 if item.status != Status::Done {
@@ -230,7 +231,7 @@ fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
             (parts.join("  ·  "), p.weak)
         }
     };
-    ui.add(egui::Label::new(text::rich(&text).size(12.5).color(color)).truncate());
+    ui.add(egui::Label::new(text::rich(&text).size(theme::scale::CAPTION).color(color)).truncate());
 }
 
 /// What "Open" does to a finished file: videos and music play, anything
@@ -246,7 +247,7 @@ fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
     let id = item.id;
     let mut action = None;
     // Looks like the other buttons of the row (a bare symbol).
-    let more = egui::Button::new(RichText::new(icon::DOTS_THREE_VERTICAL).size(17.0).color(p.weak))
+    let more = egui::Button::new(RichText::new(icon::DOTS_THREE_VERTICAL).size(theme::scale::ICON).color(p.weak))
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::NONE)
         .corner_radius(CornerRadius::same(8))
@@ -288,7 +289,7 @@ fn actions(ui: &mut Ui, p: &Palette, item: &Item) -> Option<RowAction> {
     if item.status == Status::Active {
         ui.add_space(6.0);
         let pct = item.fraction().map(|f| format!("{:.0}%", f * 100.0)).unwrap_or_default();
-        ui.label(theme::semibold(pct, 14.0).color(p.text));
+        ui.label(theme::semibold(pct, theme::scale::BODY).color(p.text));
     }
     action
 }
@@ -335,7 +336,7 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
         (icon::DATABASE, tr("Downloaded"), format_size(bytes), p.purple),
     ];
     Frame::new()
-        .fill(p.card)
+        .fill(p.surface())
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(16, 9))
@@ -348,9 +349,9 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
                 for (glyph, label, value, color) in stats {
                     let used = ui
                         .horizontal(|ui| {
-                            ui.label(RichText::new(glyph).size(18.0).color(color));
-                            ui.label(theme::semibold(value, 15.5));
-                            ui.label(RichText::new(label).size(12.5).color(p.weak));
+                            ui.label(RichText::new(glyph).size(theme::scale::ICON).color(color));
+                            ui.label(theme::semibold(value, theme::scale::BODY));
+                            ui.label(RichText::new(label).size(theme::scale::CAPTION).color(p.weak));
                         })
                         .response
                         .rect

@@ -285,10 +285,10 @@ impl AddDialog {
         let modal = egui::Modal::new(egui::Id::new("add")).show(ctx, |ui| {
             ui.set_width(560.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::LINK).size(22.0).color(p.accent));
-                ui.label(theme::semibold(tr("New download"), 18.0));
+                ui.label(RichText::new(icon::LINK).size(theme::scale::ICON_LG).color(p.accent));
+                ui.label(theme::semibold(tr("New download"), theme::scale::LEAD));
             });
-            ui.add(egui::Label::new(RichText::new(&self.url).color(p.weak).size(12.5)).truncate());
+            ui.add(egui::Label::new(RichText::new(&self.url).color(p.weak).size(theme::scale::CAPTION)).truncate());
             ui.add_space(10.0);
             if let Some((name, when)) = &self.before {
                 let when = crate::list::date(*when);
@@ -362,9 +362,11 @@ impl AddDialog {
                 Stage::Playlist { title, entries, selected } => playlist_card(ui, p, title, entries, selected),
                 Stage::File(probe) => file_card(ui, p, probe, &mut self.file_name),
             }
-            ui.add_space(12.0);
+            // A plain file has no choices of its own: the folder follows closely.
+            let plain = matches!(self.stage, Stage::File(_));
+            ui.add_space(if plain { 4.0 } else { 12.0 });
 
-            if !matches!(self.stage, Stage::File(_)) {
+            if !plain {
                 let heights: Vec<u32> = match &self.stage {
                     Stage::Media(info) if !info.heights.is_empty() => {
                         settings::HEIGHTS.iter().copied().filter(|h| info.heights.iter().any(|x| x >= h)).collect()
@@ -476,7 +478,7 @@ impl AddDialog {
                     }
                 }
             }
-            ui.add_space(8.0);
+            ui.add_space(if plain { 2.0 } else { 8.0 });
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("Save to")).color(p.weak));
                 ui.add_space(14.0);
@@ -560,13 +562,13 @@ fn media_card(ui: &mut Ui, p: &Palette, info: &Info, thumbs: &mut Thumbs) {
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     icon::FILM_STRIP,
-                    egui::FontId::proportional(30.0),
+                    egui::FontId::proportional(theme::scale::ICON_XL),
                     p.weak,
                 );
             }
         }
         ui.vertical(|ui| {
-            ui.add(egui::Label::new(text::rich(&info.title).size(16.0).strong()).wrap());
+            ui.add(egui::Label::new(text::rich(&info.title).size(theme::scale::LEAD).strong()).wrap());
             let mut meta = Vec::new();
             if !info.uploader.is_empty() {
                 meta.push(info.uploader.clone());
@@ -577,7 +579,7 @@ fn media_card(ui: &mut Ui, p: &Palette, info: &Info, thumbs: &mut Thumbs) {
             if !info.site.is_empty() {
                 meta.push(info.site.clone());
             }
-            ui.label(text::rich(&meta.join("  ·  ")).color(p.weak).size(13.0));
+            ui.label(text::rich(&meta.join("  ·  ")).color(p.weak).size(theme::scale::CAPTION));
             if info.is_live {
                 theme::pill(ui, p, tr("Live — recorded until you stop it"), p.danger);
             }
@@ -587,11 +589,13 @@ fn media_card(ui: &mut Ui, p: &Palette, info: &Info, thumbs: &mut Thumbs) {
 
 fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry], selected: &mut [bool]) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(icon::PLAYLIST).size(26.0).color(p.accent));
+        ui.label(RichText::new(icon::PLAYLIST).size(theme::scale::ICON_XL).color(p.accent));
         ui.vertical(|ui| {
             ui.add(
                 egui::Label::new(
-                    text::rich(if title.is_empty() { trl("Playlist") } else { title }).size(16.0).strong(),
+                    text::rich(if title.is_empty() { trl("Playlist") } else { title })
+                        .size(theme::scale::LEAD)
+                        .strong(),
                 )
                 .wrap(),
             );
@@ -599,7 +603,7 @@ fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry]
             ui.label(
                 RichText::new(trf("{n} of {total} selected", &[("n", &n), ("total", &entries.len())]))
                     .color(p.weak)
-                    .size(13.0),
+                    .size(theme::scale::CAPTION),
             );
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -624,7 +628,7 @@ fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry]
                         ui.label(RichText::new(format!("{}.", i + 1)).color(p.weak));
                         if let Some(d) = entries[i].duration {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(format_eta(d as u64)).color(p.weak).size(12.5));
+                                ui.label(RichText::new(format_eta(d as u64)).color(p.weak).size(theme::scale::CAPTION));
                                 ui.add(egui::Label::new(text::rich(&entries[i].title)).truncate());
                             });
                         } else {
@@ -640,7 +644,7 @@ fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry]
 fn file_card(ui: &mut Ui, p: &Palette, probe: &Probe, name: &mut String) {
     ui.horizontal(|ui| {
         let kind = FileKind::of(name);
-        ui.label(RichText::new(kind_icon(kind)).size(34.0).color(p.accent));
+        ui.label(RichText::new(kind_icon(kind)).size(theme::scale::ICON_XL).color(p.accent));
         ui.vertical(|ui| {
             ui.add(egui::TextEdit::singleline(name).desired_width(440.0).hint_text(tr("File name")));
             let size = probe.size.map(format_size).unwrap_or_else(|| tr("Size unknown").into());
@@ -653,7 +657,7 @@ fn file_card(ui: &mut Ui, p: &Palette, probe: &Probe, name: &mut String) {
                 ui.label(RichText::new(size).color(p.weak));
                 ui.label(RichText::new("·").color(p.weak));
                 let color = if probe.resumable { p.success } else { p.weak };
-                ui.label(RichText::new(how).color(color).size(13.0));
+                ui.label(RichText::new(how).color(color).size(theme::scale::CAPTION));
             });
         });
     });

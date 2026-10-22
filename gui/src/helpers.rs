@@ -230,14 +230,14 @@ impl Helpers {
             ui.horizontal(|ui| {
                 let (glyph, color) =
                     if s.installed() { (icon::CHECK_CIRCLE, p.success) } else { (icon::CIRCLE_DASHED, p.weak) };
-                ui.label(RichText::new(glyph).size(20.0).color(color));
+                ui.label(RichText::new(glyph).size(theme::scale::ICON_LG).color(color));
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal(|ui| {
-                        ui.label(theme::semibold(s.tool.name(), 15.0));
+                        ui.label(theme::semibold(s.tool.name(), theme::scale::BODY));
                         match (&s.version, s.installed()) {
                             (Some(v), true) => {
-                                ui.label(RichText::new(v).color(p.weak).size(13.0));
+                                ui.label(RichText::new(v).color(p.weak).size(theme::scale::CAPTION));
                             }
                             (None, true) => {}
                             (_, false) => {
@@ -245,11 +245,11 @@ impl Helpers {
                             }
                         }
                     });
-                    ui.label(RichText::new(purpose(s.tool)).color(p.weak).size(13.0));
+                    ui.label(RichText::new(purpose(s.tool)).color(p.weak).size(theme::scale::CAPTION));
                     if let Some(path) = &s.path {
                         let source =
                             if s.managed { tr("SwiftDM's own copy").to_string() } else { path.display().to_string() };
-                        ui.label(text::rich(&source).color(p.weak).size(12.0));
+                        ui.label(text::rich(&source).color(p.weak).size(theme::scale::CAPTION));
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

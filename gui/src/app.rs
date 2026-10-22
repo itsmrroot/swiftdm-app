@@ -92,7 +92,7 @@ enum ToastTarget {
 
 pub struct App {
     settings: Settings,
-    applied: Option<(Accent, f32, ThemeChoice)>,
+    applied: Option<(Accent, f32, ThemeChoice, bool)>,
     /// The interface language the fonts were set up for.
     language: i18n::Lang,
     applied_manager: Option<swiftdm::manager::Settings>,
@@ -269,7 +269,8 @@ impl App {
         } else if pressed(keys::ZOOM_OUT) {
             *scale = ((*scale * 10.0).round() / 10.0 - 0.1).max(0.8);
         }
-        let want = (self.settings.accent, self.settings.ui_scale, self.settings.theme);
+        let want = (self.settings.accent, self.settings.ui_scale, self.settings.theme, self.settings.glass);
+        theme::set_glass(self.settings.glass);
         if self.applied != Some(want) {
             theme::apply_style(ctx, self.settings.accent, self.settings.theme == ThemeChoice::Night);
             ctx.set_theme(self.settings.theme.preference());
@@ -744,15 +745,19 @@ impl App {
         ui.horizontal_centered(|ui| {
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
             ui.add_space(2.0);
-            ui.label(theme::semibold("SwiftDM", 17.0).color(p.text));
+            ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let chip = |text: String, on: bool| {
-                    egui::Button::new(RichText::new(text).size(13.5).color(if on { p.accent_text } else { p.text }))
-                        .fill(if on { p.tint(p.accent) } else { p.card })
-                        .stroke(Stroke::new(1.0, if on { p.accent.gamma_multiply(0.6) } else { p.border }))
-                        .corner_radius(CornerRadius::same(9))
-                        .min_size(Vec2::new(0.0, 32.0))
+                    egui::Button::new(RichText::new(text).size(theme::scale::CAPTION).color(if on {
+                        p.accent_text
+                    } else {
+                        p.text
+                    }))
+                    .fill(if on { p.tint(p.accent) } else { p.card })
+                    .stroke(Stroke::new(1.0, if on { p.accent.gamma_multiply(0.6) } else { p.control_border }))
+                    .corner_radius(CornerRadius::same(9))
+                    .min_size(Vec2::new(0.0, 32.0))
                 };
                 // Quick settings: the ones changed now and then, without
                 // leaving the list.
@@ -765,15 +770,15 @@ impl App {
                     .ui(ui, |ui| {
                         ui.set_min_width(300.0);
                         let s = &mut self.settings;
-                        ui.label(theme::semibold(tr("Quick settings"), 14.5));
+                        ui.label(theme::semibold(tr("Quick settings"), theme::scale::BODY));
                         ui.add_space(4.0);
-                        ui.label(RichText::new(tr("Download")).color(p.weak).size(12.5));
+                        ui.label(RichText::new(tr("Download")).color(p.weak).size(theme::scale::CAPTION));
                         ui.horizontal(|ui| {
                             ui.selectable_value(&mut s.mode, swiftdm::media::Mode::Video, tr("Video"));
                             ui.selectable_value(&mut s.mode, swiftdm::media::Mode::Audio, tr("Sound only"));
                         });
                         if s.mode == swiftdm::media::Mode::Video {
-                            ui.label(RichText::new(tr("Video quality")).color(p.weak).size(12.5));
+                            ui.label(RichText::new(tr("Video quality")).color(p.weak).size(theme::scale::CAPTION));
                             ui.horizontal_wrapped(|ui| {
                                 ui.selectable_value(&mut s.max_height, None, tr("Best"));
                                 for h in [1080, 720, 480] {
@@ -788,9 +793,12 @@ impl App {
                         ui.checkbox(&mut s.keep_awake, tr("Keep the computer awake while downloading"));
                         ui.checkbox(&mut s.sort_by_kind, tr("Sort into folders: Video, Music, Documents, Programs, …"));
                         ui.separator();
-                        ui.label(RichText::new(tr("Save to")).color(p.weak).size(12.5));
+                        ui.label(RichText::new(tr("Save to")).color(p.weak).size(theme::scale::CAPTION));
                         ui.add(
-                            egui::Label::new(RichText::new(s.download_dir.display().to_string()).size(12.5)).truncate(),
+                            egui::Label::new(
+                                RichText::new(s.download_dir.display().to_string()).size(theme::scale::CAPTION),
+                            )
+                            .truncate(),
                         );
                         ui.horizontal(|ui| {
                             if ui.button(icon_label(icon::FOLDER_OPEN, "Change…")).clicked()
@@ -845,7 +853,7 @@ impl App {
                     a != AfterDone::Nothing,
                 ))
                 .ui(ui, |ui| {
-                    ui.label(RichText::new(tr("When downloads are done")).color(p.weak).size(12.5));
+                    ui.label(RichText::new(tr("When downloads are done")).color(p.weak).size(theme::scale::CAPTION));
                     for x in AfterDone::ALL {
                         if ui.selectable_label(a == x, format!("{}  {}", x.icon(), x.name())).clicked() {
                             self.power.after_done = x;
@@ -859,7 +867,7 @@ impl App {
                     false,
                 ))
                 .ui(ui, |ui| {
-                    ui.label(RichText::new(tr("Downloads at the same time")).color(p.weak).size(12.5));
+                    ui.label(RichText::new(tr("Downloads at the same time")).color(p.weak).size(theme::scale::CAPTION));
                     for x in 1..=6 {
                         if ui.selectable_label(n == x, x.to_string()).clicked() {
                             self.settings.max_active = x;
@@ -877,7 +885,7 @@ impl App {
                 };
                 egui::containers::menu::MenuButton::from_button(chip(format!("{}  {shown}", icon::LIGHTNING), kb > 0))
                     .ui(ui, |ui| {
-                        ui.label(RichText::new(tr("Speed limit")).color(p.weak).size(12.5));
+                        ui.label(RichText::new(tr("Speed limit")).color(p.weak).size(theme::scale::CAPTION));
                         for x in [0u64, 256, 512, 1024, 2048, 5120, 10240] {
                             let label = if x == 0 {
                                 tr("Unlimited").to_string()
@@ -925,7 +933,7 @@ impl App {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     ui.add_space(14.0);
                     let version = i18n::trf("Version {version}", &[("version", &update::current())]);
-                    ui.label(RichText::new(version).color(p.weak).size(12.0));
+                    ui.label(RichText::new(version).color(p.weak).size(theme::scale::CAPTION));
                     ui.add_space(4.0);
                     if nav_item(ui, p, icon::INFO, tr("About"), self.page == Page::About, None).clicked() {
                         self.page = Page::About;
@@ -972,13 +980,13 @@ impl App {
     fn link_bar(&mut self, ui: &mut Ui, p: &Palette) {
         let ctx = ui.ctx().clone();
         Frame::new()
-            .fill(p.card)
+            .fill(p.surface())
             .stroke(Stroke::new(1.5, p.accent.gamma_multiply(0.55)))
             .corner_radius(CornerRadius::same(14))
             .inner_margin(Margin { left: 14, right: 8, top: 8, bottom: 8 })
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(icon::LINK).size(20.0).color(p.accent));
+                    ui.label(RichText::new(icon::LINK).size(theme::scale::ICON_LG).color(p.accent));
                     let mut submit = false;
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let busy = self.adds.iter().any(|d| d.quick && d.looking());
@@ -998,7 +1006,7 @@ impl App {
                         let edit = egui::TextEdit::singleline(&mut self.url)
                             .hint_text(tr("Paste a link — YouTube, TikTok, Instagram, X, any file…"))
                             .frame(egui::Frame::NONE)
-                            .font(egui::FontId::proportional(16.0))
+                            .font(egui::FontId::proportional(theme::scale::LEAD))
                             .desired_width(f32::INFINITY);
                         let resp = ui.add(edit);
                         if self.focus_url {
@@ -1040,10 +1048,10 @@ impl App {
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
                     ui.painter().rect_filled(rect, CornerRadius::same(12), p.tint(p.accent));
-                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon::SPARKLE, egui::FontId::proportional(24.0), p.accent);
+                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon::SPARKLE, egui::FontId::proportional(theme::scale::ICON_LG), p.accent);
                     ui.vertical(|ui| {
                         let title = if missing_ytdlp { tr("One step to download from video sites") } else { tr("Finish setting up video sites") };
-                        ui.label(theme::semibold(title, 16.0));
+                        ui.label(theme::semibold(title, theme::scale::LEAD));
                         theme::paragraph(ui, trl("SwiftDM uses free helpers (yt-dlp, FFmpeg, Deno) for YouTube, TikTok, Instagram and 1800+ more sites. They are downloaded once from their official sources (about 120 MB). Plain file links work without them."), 14.5, p.weak);
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
@@ -1080,7 +1088,7 @@ impl App {
             })
             .collect();
         ui.horizontal(|ui| {
-            ui.label(theme::semibold(self.filter.title(), 18.0));
+            ui.label(theme::semibold(self.filter.title(), theme::scale::LEAD));
             ui.label(RichText::new(shown.len().to_string()).color(p.weak));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let done = items.iter().filter(|i| i.status == Status::Done).count();
@@ -1165,7 +1173,7 @@ impl App {
                 ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(84.0)));
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
-                    ui.label(theme::semibold("SwiftDM", 30.0));
+                    ui.label(theme::semibold("SwiftDM", theme::scale::DISPLAY));
                     ui.label(RichText::new(i18n::trf("Version {version}", &[("version", &update::current())])).color(p.weak));
                     ui.label(RichText::new("Powered by Bashar Salmo").color(p.accent_text));
                 });
@@ -1194,7 +1202,7 @@ impl App {
                     let shown = cli.display().to_string();
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(tr("It is here:")).color(p.weak));
-                        ui.label(RichText::new(&shown).monospace().size(13.0));
+                        ui.label(RichText::new(&shown).monospace().size(theme::scale::CAPTION));
                         if ui.small_button(icon::COPY).on_hover_text(tr("Copy")).clicked() {
                             ui.ctx().copy_text(shown.clone());
                         }
@@ -1208,7 +1216,7 @@ impl App {
                     "swiftdm -c 16 https://example.com/x.iso # 16 connections",
                     "swiftdm info https://…                  # what is behind a link",
                 ] {
-                    ui.label(RichText::new(line).monospace().size(13.0));
+                    ui.label(RichText::new(line).monospace().size(theme::scale::CAPTION));
                 }
             });
             ui.add_space(12.0);
@@ -1249,7 +1257,7 @@ impl App {
                 ui.set_max_width(360.0);
                 for (i, t) in self.toasts.iter().enumerate() {
                     let resp = Frame::new()
-                        .fill(p.card)
+                        .fill(p.surface())
                         .stroke(Stroke::new(1.0, t.color.gamma_multiply(0.6)))
                         .corner_radius(CornerRadius::same(12))
                         .shadow(ui.visuals().popup_shadow)
@@ -1257,11 +1265,11 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_width(336.0);
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(t.glyph).size(22.0).color(t.color));
+                                ui.label(RichText::new(t.glyph).size(theme::scale::ICON_LG).color(t.color));
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     ui.horizontal(|ui| {
-                                        ui.label(theme::semibold(&t.text, 14.5));
+                                        ui.label(theme::semibold(&t.text, theme::scale::BODY));
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                             if ui.small_button(icon::X).clicked() {
                                                 close = Some(i);
@@ -1269,7 +1277,12 @@ impl App {
                                         });
                                     });
                                     for line in t.detail.lines().take(3) {
-                                        ui.add(egui::Label::new(text::rich(line).color(p.weak).size(12.5)).truncate());
+                                        ui.add(
+                                            egui::Label::new(
+                                                text::rich(line).color(p.weak).size(theme::scale::CAPTION),
+                                            )
+                                            .truncate(),
+                                        );
                                     }
                                     ui.horizontal(|ui| match &t.target {
                                         ToastTarget::Item(_) => {
@@ -1333,8 +1346,8 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("delete")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::TRASH).size(24.0).color(p.danger));
-                ui.label(theme::semibold(tr("Delete this file?"), 17.0));
+                ui.label(RichText::new(icon::TRASH).size(theme::scale::ICON_LG).color(p.danger));
+                ui.label(theme::semibold(tr("Delete this file?"), theme::scale::LEAD));
             });
             ui.add_space(6.0);
             ui.add(egui::Label::new(text::rich(item.display_name())).wrap());
@@ -1343,7 +1356,7 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(theme::semibold(tr("Delete"), 14.5).color(p.on_danger))
+                        egui::Button::new(theme::semibold(tr("Delete"), theme::scale::BODY).color(p.on_danger))
                             .fill(p.danger_fill)
                             .min_size(Vec2::new(0.0, 36.0)),
                     )
@@ -1410,6 +1423,8 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         let p = Palette::new(ui.visuals().dark_mode, self.settings.theme == ThemeChoice::Night, self.settings.accent);
+        // Under everything: the soft background that frosted surfaces lie on.
+        theme::paint_backdrop(ui.painter(), ui.max_rect(), &p, self.settings.accent.color());
         let items = self.manager.items();
 
         // Ctrl/Cmd+V outside a text field adds the link.
@@ -1444,7 +1459,7 @@ impl eframe::App for App {
             let chosen = egui::Panel::top("menubar")
                 .resizable(false)
                 .show_separator_line(false)
-                .frame(Frame::new().fill(p.sidebar).inner_margin(Margin::symmetric(8, 2)))
+                .frame(Frame::new().fill(p.bar()).inner_margin(Margin::symmetric(8, 2)))
                 .show(ui, |ui| crate::menu::window_menu(ui, after_done, theme))
                 .inner;
             if let Some(c) = chosen {
@@ -1455,7 +1470,7 @@ impl eframe::App for App {
             .exact_size(54.0)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(p.sidebar).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin {
+            .frame(Frame::new().fill(p.bar()).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin {
                 left: 16,
                 right: 14,
                 top: 0,
@@ -1465,12 +1480,10 @@ impl eframe::App for App {
         egui::Panel::left("sidebar")
             .exact_size(232.0)
             .resizable(false)
-            .frame(
-                Frame::new().fill(p.sidebar).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0)),
-            )
+            .frame(Frame::new().fill(p.bar()).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0)))
             .show(ui, |ui| self.sidebar(ui, &p, &items));
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 26, right: 26, top: 22, bottom: 18 }))
+            .frame(Frame::new().fill(p.page()).inner_margin(Margin { left: 26, right: 26, top: 22, bottom: 18 }))
             .show(ui, |ui| match self.page {
                 Page::Downloads => self.downloads_page(ui, &p, &items),
                 Page::Settings => {
@@ -1536,7 +1549,7 @@ fn group_label(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add_space(14.0);
-        ui.label(RichText::new(text).size(11.0).color(p.weak).strong());
+        ui.label(RichText::new(text).size(theme::scale::CAPTION).color(p.weak).strong());
     });
 }
 
@@ -1561,14 +1574,14 @@ fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, ba
             egui::pos2(rect.left() + 14.0, y),
             egui::Align2::LEFT_CENTER,
             glyph,
-            egui::FontId::proportional(18.0),
+            egui::FontId::proportional(theme::scale::ICON),
             if active { p.accent } else { color },
         );
         painter.text(
             egui::pos2(rect.left() + 42.0, y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::new(14.5, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+            egui::FontId::new(theme::scale::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
             color,
         );
         if let Some(b) = badge {
@@ -1577,7 +1590,7 @@ fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, ba
                 egui::pos2(rect.right() - 12.0, y),
                 egui::Align2::RIGHT_CENTER,
                 b,
-                egui::FontId::proportional(12.5),
+                egui::FontId::proportional(theme::scale::CAPTION),
                 c,
             );
         }
@@ -1591,17 +1604,17 @@ fn empty_state(ui: &mut Ui, p: &Palette, nothing_yet: bool, search: &str) {
     ui.vertical_centered(|ui| {
         if !search.trim().is_empty() {
             ui.label(RichText::new(icon::MAGNIFYING_GLASS).size(40.0).color(p.weak));
-            ui.label(RichText::new(tr("Nothing matches the search.")).color(p.weak).size(15.0));
+            ui.label(RichText::new(tr("Nothing matches the search.")).color(p.weak).size(theme::scale::BODY));
             return;
         }
         if !nothing_yet {
             ui.label(RichText::new(icon::TRAY).size(40.0).color(p.weak));
-            ui.label(RichText::new(tr("Nothing here.")).color(p.weak).size(15.0));
+            ui.label(RichText::new(tr("Nothing here.")).color(p.weak).size(theme::scale::BODY));
             return;
         }
         ui.label(RichText::new(icon::DOWNLOAD_SIMPLE).size(54.0).color(p.accent));
         ui.add_space(6.0);
-        ui.label(theme::semibold(tr("Paste a link to start"), 20.0));
+        ui.label(theme::semibold(tr("Paste a link to start"), theme::scale::TITLE));
         ui.label(RichText::new(tr("Or copy one anywhere — SwiftDM offers to download it.")).color(p.weak));
         ui.add_space(16.0);
         ui.horizontal_wrapped(|ui| {

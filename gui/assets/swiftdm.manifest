@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="BasharSalmo.SwiftDM" version="1.5.0.0"/>
+  <assemblyIdentity type="win32" name="BasharSalmo.SwiftDM" version="1.6.0.0"/>
   <description>SwiftDM - Powered by Bashar Salmo</description>
   <!-- A download manager needs no administrator rights. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

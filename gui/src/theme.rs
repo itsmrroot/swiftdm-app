@@ -6,6 +6,7 @@ use eframe::egui::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use swiftdm::http::Resume;
 
@@ -78,15 +79,27 @@ impl Accent {
     }
 }
 
+/// Whether surfaces are frosted (translucent over a soft backdrop): the
+/// setting, read when a [`Palette`] is made.
+static GLASS: AtomicBool = AtomicBool::new(true);
+
+pub fn set_glass(on: bool) {
+    GLASS.store(on, Ordering::Relaxed);
+}
+
 /// Colours for the current theme.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub dark: bool,
+    /// Frosted surfaces (see [`Palette::surface`]).
+    pub glass: bool,
     pub bg: Color32,
     pub sidebar: Color32,
     pub card: Color32,
     pub card_alt: Color32,
     pub border: Color32,
+    /// The edge of buttons and fields: a little stronger than the cards'.
+    pub control_border: Color32,
     pub text: Color32,
     pub weak: Color32,
     pub accent: Color32,
@@ -110,6 +123,7 @@ impl Palette {
     /// `night` only applies to the dark palette.
     pub fn new(dark: bool, night: bool, accent: Accent) -> Self {
         let mut p = Self::base(dark, night, accent);
+        p.glass = GLASS.load(Ordering::Relaxed);
         let (accent_fill, on_accent) = solid(p.accent);
         let (danger_fill, on_danger) = solid(p.danger);
         p.accent_fill = accent_fill;
@@ -127,11 +141,13 @@ impl Palette {
         if dark && night {
             Self {
                 dark,
+                glass: false,
                 bg: Color32::from_rgb(2, 2, 8),
                 sidebar: Color32::from_rgb(5, 5, 16),
                 card: Color32::from_rgb(8, 8, 26),
                 card_alt: Color32::from_rgb(13, 13, 34),
                 border: Color32::from_rgb(24, 24, 62),
+                control_border: Color32::from_rgb(46, 46, 96),
                 text: Color32::from_rgb(214, 214, 255),
                 weak: Color32::from_rgb(126, 126, 188),
                 accent,
@@ -148,11 +164,13 @@ impl Palette {
         } else if dark {
             Self {
                 dark,
+                glass: false,
                 bg: Color32::from_rgb(7, 7, 14),
                 sidebar: Color32::from_rgb(12, 12, 24),
                 card: Color32::from_rgb(16, 16, 34),
                 card_alt: Color32::from_rgb(22, 22, 48),
                 border: Color32::from_rgb(34, 34, 60),
+                control_border: Color32::from_rgb(56, 56, 94),
                 text: Color32::from_rgb(234, 234, 248),
                 weak: Color32::from_rgb(136, 136, 176),
                 accent,
@@ -169,11 +187,13 @@ impl Palette {
         } else {
             Self {
                 dark,
+                glass: false,
                 bg: Color32::from_rgb(244, 244, 248),
                 sidebar: Color32::from_rgb(255, 255, 255),
                 card: Color32::from_rgb(255, 255, 255),
                 card_alt: Color32::from_rgb(238, 238, 245),
-                border: Color32::from_rgb(220, 220, 232),
+                border: Color32::from_rgb(203, 203, 219),
+                control_border: Color32::from_rgb(168, 168, 192),
                 text: Color32::from_rgb(24, 24, 42),
                 weak: Color32::from_rgb(96, 96, 140),
                 accent,
@@ -190,10 +210,58 @@ impl Palette {
         }
     }
 
+    /// `c` as a frosted surface: mostly opaque, so that text on it keeps
+    /// its contrast, with the backdrop showing through a little.
+    pub fn frost(&self, c: Color32, alpha: f32) -> Color32 {
+        if self.glass { Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (alpha * 255.0).round() as u8) } else { c }
+    }
+
+    /// Cards.
+    pub fn surface(&self) -> Color32 {
+        self.frost(self.card, 0.80)
+    }
+
+    /// The bars (header, sidebar).
+    pub fn bar(&self) -> Color32 {
+        self.frost(self.sidebar, 0.78)
+    }
+
+    /// The page behind the cards: see through to the backdrop when frosted.
+    pub fn page(&self) -> Color32 {
+        if self.glass { Color32::TRANSPARENT } else { self.bg }
+    }
+
     /// A soft background tint of `c` that works on cards.
     pub fn tint(&self, c: Color32) -> Color32 {
         c.gamma_multiply(if self.dark { 0.16 } else { 0.10 })
     }
+}
+
+/// How strong the backdrop's glow is at its corners (of 255): the accent
+/// at the top left, the second color at the top right.
+fn glow_alphas(dark: bool) -> (u8, u8) {
+    if dark { (72, 34) } else { (52, 26) }
+}
+
+/// The soft background that frosted surfaces lie on: the accent and a
+/// second color fading across the window.
+pub fn paint_backdrop(painter: &egui::Painter, rect: egui::Rect, p: &Palette, accent: Color32) {
+    if !p.glass {
+        return;
+    }
+    // The page color first (the window itself may be any color), then the glow.
+    painter.rect_filled(rect, 0.0, p.bg);
+    let (strong, faint) = glow_alphas(p.dark);
+    let with = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+    let second = p.purple;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), with(accent, strong));
+    mesh.colored_vertex(rect.right_top(), with(second, faint));
+    mesh.colored_vertex(rect.right_bottom(), with(accent, 0));
+    mesh.colored_vertex(rect.left_bottom(), with(second, faint / 2));
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// The WCAG contrast ratio of two opaque colors.
@@ -365,6 +433,10 @@ pub mod scale {
     pub const TITLE: f32 = 22.0;
     /// Page titles.
     pub const DISPLAY: f32 = 28.0;
+    /// Icons: in rows and buttons, beside a title, large.
+    pub const ICON: f32 = 18.0;
+    pub const ICON_LG: f32 = 22.0;
+    pub const ICON_XL: f32 = 28.0;
 }
 
 pub fn apply_style(ctx: &egui::Context, accent: Accent, night: bool) {
@@ -381,7 +453,7 @@ pub fn apply_style(ctx: &egui::Context, accent: Accent, night: bool) {
                 (TextStyle::Body, FontId::new(scale::BODY, FontFamily::Proportional)),
                 (TextStyle::Button, FontId::new(scale::BODY, FontFamily::Proportional)),
                 (TextStyle::Small, FontId::new(scale::CAPTION, FontFamily::Proportional)),
-                (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+                (TextStyle::Monospace, FontId::new(scale::CAPTION, FontFamily::Monospace)),
             ]
             .into();
         });
@@ -392,7 +464,7 @@ fn visuals(p: &Palette) -> Visuals {
     let mut v = if p.dark { Visuals::dark() } else { Visuals::light() };
     let r = CornerRadius::same(8);
     v.panel_fill = p.bg;
-    v.window_fill = p.card;
+    v.window_fill = p.frost(p.card, 0.95);
     v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(14);
     v.window_shadow =
@@ -417,7 +489,7 @@ fn visuals(p: &Palette) -> Visuals {
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
     w.inactive.bg_fill = p.card_alt;
     w.inactive.weak_bg_fill = p.card_alt;
-    w.inactive.bg_stroke = Stroke::new(1.0, p.border);
+    w.inactive.bg_stroke = Stroke::new(1.0, p.control_border);
     w.inactive.fg_stroke = Stroke::new(1.0, p.text);
     w.hovered.bg_fill = p.card_alt;
     w.hovered.weak_bg_fill = blend(p.card_alt, p.accent, if p.dark { 0.12 } else { 0.06 });
@@ -450,7 +522,7 @@ pub fn semibold(text: impl Into<String>, size: f32) -> RichText {
 
 pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
     Frame::new()
-        .fill(p.card)
+        .fill(p.surface())
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::same(18))
@@ -460,14 +532,14 @@ pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> Inne
 pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
     ui.label(semibold(title, scale::DISPLAY).color(p.text));
     if !subtitle.is_empty() {
-        ui.label(RichText::new(subtitle).color(p.weak).size(15.0));
+        ui.label(RichText::new(subtitle).color(p.weak).size(scale::BODY));
     }
     ui.add_space(14.0);
 }
 
 pub fn section_title(ui: &mut Ui, p: &Palette, icon: &str, title: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(icon).size(18.0).color(p.accent));
+        ui.label(RichText::new(icon).size(scale::ICON).color(p.accent));
         ui.label(semibold(title, scale::LEAD).color(p.text));
     });
     ui.add_space(4.0);
@@ -482,7 +554,7 @@ pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str, enabled: bool) -> Re
         (p.card_alt, p.weak, Stroke::new(1.0, p.border))
     };
     ui.add(
-        egui::Button::new(semibold(text, 15.0).color(color))
+        egui::Button::new(semibold(text, scale::BODY).color(color))
             .fill(fill)
             .stroke(stroke)
             .corner_radius(CornerRadius::same(10))
@@ -493,7 +565,7 @@ pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str, enabled: bool) -> Re
 
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
     ui.add(
-        egui::Button::new(RichText::new(text).size(14.5))
+        egui::Button::new(RichText::new(text).size(scale::BODY))
             .corner_radius(CornerRadius::same(10))
             .min_size(Vec2::new(0.0, 36.0)),
     )
@@ -502,7 +574,7 @@ pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
 /// A small square button with just an icon, and a tooltip.
 pub fn icon_button(ui: &mut Ui, p: &Palette, icon: &str, tip: &str, color: Option<Color32>) -> Response {
     ui.add(
-        egui::Button::new(RichText::new(icon).size(17.0).color(color.unwrap_or(p.weak)))
+        egui::Button::new(RichText::new(icon).size(scale::ICON).color(color.unwrap_or(p.weak)))
             .fill(Color32::TRANSPARENT)
             .stroke(Stroke::NONE)
             .corner_radius(CornerRadius::same(8))
@@ -530,8 +602,11 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, p: &Palette, value: &mut T, o
             ui.spacing_mut().item_spacing.x = 2.0;
             for (v, label) in options {
                 let on = *value == *v;
-                let text =
-                    if on { semibold(*label, 14.0).color(p.on_accent) } else { RichText::new(*label).size(14.0) };
+                let text = if on {
+                    semibold(*label, scale::BODY).color(p.on_accent)
+                } else {
+                    RichText::new(*label).size(scale::BODY)
+                };
                 let b = egui::Button::new(text)
                     .fill(if on { p.accent_fill } else { Color32::TRANSPARENT })
                     .stroke(Stroke::NONE)
@@ -557,7 +632,7 @@ pub fn notice(ui: &mut Ui, p: &Palette, color: Color32, icon: &str, text: &str) 
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon).size(18.0).color(color));
+                ui.label(RichText::new(icon).size(scale::ICON).color(color));
                 paragraph(ui, text, 14.0, p.text);
             });
         });
@@ -739,5 +814,32 @@ mod tests {
             // Text is still all there.
             assert!(font.charmap().map('A').is_some() && font.charmap().map('ö').is_some(), "{name}");
         }
+    }
+
+    /// Frosted surfaces let the backdrop through a little: with its glow at
+    /// the strongest, text on them is still readable.
+    #[test]
+    fn text_is_readable_on_frosted_surfaces() {
+        let over = |top: Color32, alpha: f32, below: Color32| blend(below, top, alpha);
+        for (dark, night) in [(true, true), (true, false), (false, false)] {
+            for accent in Accent::ALL {
+                set_glass(true);
+                let p = Palette::new(dark, night, accent);
+                // The page with the backdrop at its strongest (top left corner).
+                let glow = glow_alphas(dark).0 as f32 / 255.0;
+                let page = over(p.accent, glow, p.bg);
+                let who = format!("{accent:?} dark={dark} night={night}");
+                for (name, c, a) in [("card", p.card, 0.80), ("bar", p.sidebar, 0.78)] {
+                    let surface = over(c, a, page);
+                    assert!(contrast(p.text, surface) >= 7.0, "text on {name}, {who}");
+                    assert!(contrast(p.weak, surface) >= 4.5, "weak text on {name}, {who}");
+                    assert!(contrast(p.accent_text, surface) >= 4.5, "accent text on {name}, {who}");
+                    for (what, color) in [("success", p.success), ("warning", p.warning), ("danger", p.danger)] {
+                        assert!(contrast(color, surface) >= 4.5, "{what} on {name}, {who}");
+                    }
+                }
+            }
+        }
+        set_glass(true);
     }
 }

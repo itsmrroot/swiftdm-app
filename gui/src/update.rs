@@ -500,8 +500,8 @@ impl Updater {
         let modal = egui::Modal::new(egui::Id::new("update")).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::ARROW_CIRCLE_UP).size(26.0).color(p.accent));
-                ui.label(theme::semibold(tr("Update available"), 18.0).color(p.text));
+                ui.label(RichText::new(icon::ARROW_CIRCLE_UP).size(theme::scale::ICON_XL).color(p.accent));
+                ui.label(theme::semibold(tr("Update available"), theme::scale::LEAD).color(p.text));
             });
             ui.add_space(8.0);
             theme::paragraph(

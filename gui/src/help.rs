@@ -15,13 +15,13 @@ pub enum HelpAction {
 
 fn section(ui: &mut Ui, p: &Palette, glyph: &str, title: &str, open: bool, body: impl FnOnce(&mut Ui)) {
     Frame::new()
-        .fill(p.card)
+        .fill(p.surface())
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(16, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::CollapsingHeader::new(RichText::new(format!("{glyph}  {title}")).size(16.0).strong())
+            egui::CollapsingHeader::new(RichText::new(format!("{glyph}  {title}")).size(theme::scale::LEAD).strong())
                 .id_salt(title)
                 .default_open(open)
                 .show(ui, |ui| {
@@ -39,7 +39,7 @@ fn text(ui: &mut Ui, p: &Palette, t: &str) {
 fn steps(ui: &mut Ui, p: &Palette, items: &[&str]) {
     for (n, t) in items.iter().enumerate() {
         ui.horizontal_top(|ui| {
-            ui.label(theme::semibold(format!("{}.", n + 1), 14.5).color(p.accent_text));
+            ui.label(theme::semibold(format!("{}.", n + 1), theme::scale::BODY).color(p.accent_text));
             theme::paragraph(ui, t, 14.5, p.text);
         });
     }
@@ -232,7 +232,7 @@ pub fn page(ui: &mut Ui, p: &Palette) -> HelpAction {
             "swiftdm -c 16 https://example.com/x.iso    # 16 connections",
             "swiftdm info https://…                     # what is behind a link",
         ] {
-            ui.label(RichText::new(line).monospace().size(12.5));
+            ui.label(RichText::new(line).monospace().size(theme::scale::CAPTION));
         }
     });
 
@@ -263,7 +263,7 @@ pub fn page(ui: &mut Ui, p: &Palette) -> HelpAction {
             ),
         ];
         for (q, a) in faq {
-            ui.label(theme::semibold(q, 14.5));
+            ui.label(theme::semibold(q, theme::scale::BODY));
             theme::paragraph(ui, a, 14.0, p.weak);
             ui.add_space(4.0);
         }
