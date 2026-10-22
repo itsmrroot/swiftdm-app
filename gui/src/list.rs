@@ -116,7 +116,8 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
                             None => {
                                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                                 let c = kind_color(p, kind);
-                                ui.painter().rect_filled(rect, CornerRadius::same(8), p.tint(c));
+                                // A calm tile; only the symbol has the color of the kind.
+                                ui.painter().rect_filled(rect, CornerRadius::same(8), p.card_alt);
                                 ui.painter().text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
@@ -151,7 +152,18 @@ pub fn row(ui: &mut Ui, p: &Palette, item: &Item, thumbs: &mut Thumbs) -> Option
                                     };
                                     let fraction =
                                         if item.status == Status::Active { fraction } else { fraction.or(Some(0.0)) };
-                                    theme::bar(ui, p, fraction, color, ui.available_width());
+                                    // Over several connections: each one's part, and where it works.
+                                    match item.resume.as_ref().filter(|r| r.segments.len() > 1 && r.size > 0) {
+                                        Some(r) => theme::segmented_bar(
+                                            ui,
+                                            p,
+                                            r,
+                                            color,
+                                            ui.available_width(),
+                                            item.status == Status::Active,
+                                        ),
+                                        None => theme::bar(ui, p, fraction, color, ui.available_width()),
+                                    }
                                 }
                             });
                         });

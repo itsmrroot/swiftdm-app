@@ -110,6 +110,7 @@ jobs:
           # The desktop app embeds Noto Sans Arabic, whose licence must travel with it.
           if [[ "${{ matrix.bins }}" == *swiftdm-gui* ]]; then
             cp gui/assets/fonts/OFL.txt "$name/OFL-NotoSansArabic.txt"
+            cp gui/assets/fonts/LICENSE-Inter.txt "$name/LICENSE-Inter.txt"
           fi
           mkdir upload
           if [[ "${{ runner.os }}" == "Windows" ]]; then

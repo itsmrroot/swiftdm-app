@@ -292,6 +292,9 @@ pub trait Report: Sync {
     fn progress(&self, done: u64, total: Option<u64>);
     /// The state to save, so that the download can continue after a restart.
     fn checkpoint(&self, _resume: &Resume) {}
+    /// Where each connection is now, several times a second: for showing,
+    /// not for saving.
+    fn live(&self, _resume: &Resume) {}
 }
 
 /// How a download ended, when it did not fail.
@@ -698,6 +701,7 @@ fn ranged(
             std::thread::sleep(Duration::from_millis(250));
             let snap = shared.snapshot(size);
             report.progress(snap.done(), Some(size));
+            report.live(&snap);
             if last_checkpoint.elapsed() >= Duration::from_secs(3) {
                 report.checkpoint(&snap);
                 last_checkpoint = Instant::now();

@@ -7,6 +7,8 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use swiftdm::http::Resume;
+
 use crate::{i18n, text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,6 +242,10 @@ pub fn readable_on(color: Color32, bg: Color32, dark: bool) -> Color32 {
     c
 }
 
+/// Inter (SIL Open Font License, see LICENSE-Inter.txt).
+const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
+
 pub const SEMIBOLD: &str = "semibold";
 
 fn semibold_family() -> FontFamily {
@@ -286,12 +292,24 @@ pub fn install_fonts(ctx: &egui::Context, lang: i18n::Lang, cjk: bool) {
     } else {
         &[]
     };
+    // Where there is no system font file to use (Linux has none that is
+    // the same everywhere), the bundled Inter: the same on every computer.
+    let bundled: &[(&str, &'static [u8])] = &[("system", INTER_REGULAR), ("system-semibold", INTER_SEMIBOLD)];
     fonts.font_data.insert("arabic".into(), Arc::new(FontData::from_static(i18n::ARABIC_FONT)));
     fonts.font_data.insert("arabic-semibold".into(), Arc::new(FontData::from_static(i18n::ARABIC_FONT_SEMIBOLD)));
     let mut loaded = Vec::new();
+    // Development aid: see the bundled font on any system.
+    let candidates: &[(&str, &str)] =
+        if cfg!(debug_assertions) && std::env::var_os("SWIFTDM_FONT").is_some() { &[] } else { candidates };
     for (name, path) in candidates {
         if let Ok(bytes) = std::fs::read(path) {
             fonts.font_data.insert((*name).to_string(), Arc::new(FontData::from_owned(bytes)));
+            loaded.push(*name);
+        }
+    }
+    for (name, bytes) in bundled {
+        if !loaded.contains(name) {
+            fonts.font_data.insert((*name).to_string(), Arc::new(FontData::from_static(bytes)));
             loaded.push(*name);
         }
     }
@@ -335,6 +353,20 @@ pub fn install_fonts(ctx: &egui::Context, lang: i18n::Lang, cjk: bool) {
     ctx.set_fonts(fonts);
 }
 
+/// The text sizes of the app: a small scale used by the shared widgets.
+pub mod scale {
+    /// Details: sizes, times, hints.
+    pub const CAPTION: f32 = 13.0;
+    /// Text and buttons.
+    pub const BODY: f32 = 14.5;
+    /// Names of sections and dialogs.
+    pub const LEAD: f32 = 17.0;
+    /// Headings.
+    pub const TITLE: f32 = 22.0;
+    /// Page titles.
+    pub const DISPLAY: f32 = 28.0;
+}
+
 pub fn apply_style(ctx: &egui::Context, accent: Accent, night: bool) {
     for theme in [Theme::Dark, Theme::Light] {
         let pal = Palette::new(theme == Theme::Dark, night, accent);
@@ -345,10 +377,10 @@ pub fn apply_style(ctx: &egui::Context, accent: Accent, night: bool) {
             s.spacing.interact_size.y = 30.0;
             s.spacing.window_margin = Margin::same(16);
             s.text_styles = [
-                (TextStyle::Heading, FontId::new(24.0, semibold_family())),
-                (TextStyle::Body, FontId::new(14.5, FontFamily::Proportional)),
-                (TextStyle::Button, FontId::new(14.5, FontFamily::Proportional)),
-                (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
+                (TextStyle::Heading, FontId::new(scale::TITLE, semibold_family())),
+                (TextStyle::Body, FontId::new(scale::BODY, FontFamily::Proportional)),
+                (TextStyle::Button, FontId::new(scale::BODY, FontFamily::Proportional)),
+                (TextStyle::Small, FontId::new(scale::CAPTION, FontFamily::Proportional)),
                 (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
             ]
             .into();
@@ -426,7 +458,7 @@ pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> Inne
 }
 
 pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
-    ui.label(semibold(title, 26.0).color(p.text));
+    ui.label(semibold(title, scale::DISPLAY).color(p.text));
     if !subtitle.is_empty() {
         ui.label(RichText::new(subtitle).color(p.weak).size(15.0));
     }
@@ -436,7 +468,7 @@ pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
 pub fn section_title(ui: &mut Ui, p: &Palette, icon: &str, title: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(icon).size(18.0).color(p.accent));
-        ui.label(semibold(title, 16.5).color(p.text));
+        ui.label(semibold(title, scale::LEAD).color(p.text));
     });
     ui.add_space(4.0);
 }
@@ -486,7 +518,7 @@ pub fn pill(ui: &mut Ui, p: &Palette, text: &str, color: Color32) -> Response {
         .fill(p.tint(color))
         .corner_radius(CornerRadius::same(255))
         .inner_margin(Margin::symmetric(9, 2))
-        .show(ui, |ui| ui.label(RichText::new(text).size(12.0).color(color).strong()))
+        .show(ui, |ui| ui.label(RichText::new(text).size(scale::CAPTION).color(color).strong()))
         .response
 }
 
@@ -570,6 +602,53 @@ pub fn paragraph(ui: &mut Ui, text: &str, size: f32, color: Color32) {
     });
 }
 
+/// What the segments of a download look like on a bar of `width`: for each
+/// connection the part it has finished and where it works now (`None` once
+/// it is done). Positions are 0..=width.
+pub fn segment_spans(resume: &Resume, width: f32) -> Vec<(f32, f32, Option<f32>)> {
+    if resume.size == 0 {
+        return Vec::new();
+    }
+    let x = |byte: u64| (byte.min(resume.size) as f64 / resume.size as f64 * width as f64) as f32;
+    resume
+        .segments
+        .iter()
+        .map(|&[start, pos, end]| {
+            let stop = end.saturating_add(1);
+            let filled_to = pos.clamp(start, stop);
+            (x(start), x(filled_to), (pos <= end).then(|| x(pos)))
+        })
+        .collect()
+}
+
+/// A progress bar of a download over several connections: each connection
+/// fills its own part of the file, and a brighter mark shows where it
+/// works now.
+pub fn segmented_bar(ui: &mut Ui, p: &Palette, resume: &Resume, color: Color32, width: f32, live: bool) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(3), p.card_alt);
+    let head = blend(color, Color32::WHITE, 0.55);
+    let spans = segment_spans(resume, rect.width());
+    for (from, to, pos) in &spans {
+        if to - from >= 0.5 {
+            let r = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + from, rect.top()),
+                egui::pos2(rect.left() + to, rect.bottom()),
+            );
+            painter.rect_filled(r, CornerRadius::same(2), color);
+        }
+        // Where this connection works now.
+        if live && let Some(at) = pos {
+            let h = egui::Rect::from_min_max(
+                egui::pos2((rect.left() + at - 1.0).max(rect.left()), rect.top()),
+                egui::pos2((rect.left() + at + 1.5).min(rect.right()), rect.bottom()),
+            );
+            painter.rect_filled(h, CornerRadius::same(1), head);
+        }
+    }
+}
+
 /// A thin progress bar in `color`.
 pub fn bar(ui: &mut Ui, p: &Palette, fraction: Option<f32>, color: Color32, width: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), egui::Sense::hover());
@@ -633,6 +712,32 @@ mod tests {
                 assert!(contrast(p.text, bg) >= 7.0, "text, dark={dark} night={night}");
                 assert!(contrast(p.weak, bg) >= 4.5, "weak text, dark={dark} night={night}");
             }
+        }
+    }
+
+    #[test]
+    fn segments_become_spans_of_the_bar() {
+        // Three parts of a 300-byte file: half done, not started, done.
+        let r = Resume { size: 300, segments: vec![[0, 50, 99], [100, 100, 199], [200, 300, 299]], validator: None };
+        let spans = segment_spans(&r, 300.0);
+        assert_eq!(spans[0], (0.0, 50.0, Some(50.0)));
+        assert_eq!(spans[1], (100.0, 100.0, Some(100.0)));
+        assert_eq!(spans[2], (200.0, 300.0, None));
+        assert!(segment_spans(&Resume { size: 0, segments: vec![], validator: None }, 100.0).is_empty());
+    }
+
+    /// The bundled text font must not have glyphs of its own in the private
+    /// use area: that is where the icons are, and the first font that has a
+    /// code point draws it (as a stray letter, if it is Inter's).
+    #[test]
+    fn the_bundled_font_leaves_the_icons_alone() {
+        use skrifa::MetadataProvider;
+        for (name, bytes) in [("regular", INTER_REGULAR), ("semibold", INTER_SEMIBOLD)] {
+            let font = skrifa::FontRef::new(bytes).expect(name);
+            let clashes = font.charmap().mappings().filter(|(c, _)| (0xE000..=0xF8FF).contains(c)).count();
+            assert_eq!(clashes, 0, "{name} has {clashes} glyphs in the private use area");
+            // Text is still all there.
+            assert!(font.charmap().map('A').is_some() && font.charmap().map('ö').is_some(), "{name}");
         }
     }
 }

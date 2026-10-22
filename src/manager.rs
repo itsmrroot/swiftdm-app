@@ -876,6 +876,12 @@ impl http::Report for Progress {
         self.inner.update(self.id, |i| i.resume = Some(r));
         self.inner.lock().dirty = true;
     }
+
+    fn live(&self, resume: &Resume) {
+        // Not saved to disk each time: only the checkpoints are.
+        let r = resume.clone();
+        self.inner.update(self.id, |i| i.resume = Some(r));
+    }
 }
 
 impl media::Report for Progress {
