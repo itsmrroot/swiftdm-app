@@ -73,5 +73,14 @@
   },
   "buttonTitle": {
     "message": "التنزيل بـ SwiftDM"
+  },
+  "hideHere": {
+    "message": "إخفاء الزر في هذا الموقع"
+  },
+  "hideTitle": {
+    "message": "إخفاء في هذا الموقع"
+  },
+  "showHere": {
+    "message": "إظهار الزر في هذا الموقع"
   }
 }

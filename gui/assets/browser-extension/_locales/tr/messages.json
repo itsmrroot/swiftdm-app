@@ -73,5 +73,14 @@
   },
   "buttonTitle": {
     "message": "SwiftDM ile indir"
+  },
+  "hideHere": {
+    "message": "Düğmeyi bu sitede gizle"
+  },
+  "hideTitle": {
+    "message": "Bu sitede gizle"
+  },
+  "showHere": {
+    "message": "Düğmeyi bu sitede göster"
   }
 }

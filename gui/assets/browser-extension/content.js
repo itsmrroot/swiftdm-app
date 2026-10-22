@@ -87,6 +87,9 @@
     reply({ url: v ? videoUrl(v) : single(location.href) ? location.href : null, src: v?.currentSrc || null });
   });
   let enabled = true;
+  /** The sites where the person closed the button. */
+  let hiddenSites = [];
+  const hiddenHere = () => hiddenSites.includes(location.hostname);
   // Throws, not rejects, once the extension was reloaded or removed.
   const message = (msg) => {
     try {
@@ -95,9 +98,18 @@
       return Promise.reject(new Error("the extension was reloaded"));
     }
   };
-  message({ type: "settings" }).then((s) => (enabled = s?.videoButton !== false)).catch(() => {});
+  message({ type: "settings" })
+    .then((s) => {
+      enabled = s?.videoButton !== false;
+      hiddenSites = s?.hiddenSites ?? [];
+    })
+    .catch(() => {});
   ext.storage.onChanged.addListener((c) => {
     if (c.videoButton) enabled = c.videoButton.newValue !== false;
+    if (c.hiddenSites) {
+      hiddenSites = c.hiddenSites.newValue ?? [];
+      if (hiddenHere()) hide();
+    }
   });
 
   // In a shadow root, so that the page's styles cannot touch it.
@@ -116,6 +128,8 @@
       .main { background: #6366f1; }
       .main:hover { background: #4f51cc; }
       svg { width: 14px; height: 14px; fill: currentColor; }
+      .close { padding: 6px 7px; opacity: .7; }
+      .close:hover { opacity: 1; background: #dc2626; }
       .toast { color: #fff; padding: 6px 10px; }
     </style>
     <div class="bar">
@@ -123,6 +137,9 @@
         <svg viewBox="0 0 24 24"><path d="M13 2 5 14h6l-2 8 10-13h-7z"/></svg>${t("video")}
       </button>
       <button data-mode="audio">${t("sound")}</button>
+      <button class="close" data-close title="${t("hideTitle")}" aria-label="${t("hideTitle")}">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
+      </button>
     </div>`;
   (document.body || document.documentElement).appendChild(host);
   const bar = root.querySelector(".bar");
@@ -148,7 +165,7 @@
   document.addEventListener(
     "mouseover",
     (e) => {
-      if (!enabled) return;
+      if (!enabled || hiddenHere()) return;
       if (host.contains(e.target) || e.composedPath().includes(host)) {
         clearTimeout(hideTimer);
         return;
@@ -170,9 +187,21 @@
 
   root.addEventListener("click", async (e) => {
     const button = e.target.closest("button");
-    if (!button || !target) return;
+    if (!button) return;
     e.preventDefault();
     e.stopPropagation();
+    if (button.hasAttribute("data-close")) {
+      // Closed for this site; the popup brings it back.
+      hiddenSites = [...new Set([...hiddenSites, location.hostname])];
+      hide();
+      try {
+        await ext.storage.sync.set({ hiddenSites });
+      } catch {
+        // Hidden until the page is reloaded at least.
+      }
+      return;
+    }
+    if (!target) return;
     const reply = await message({
       type: "video",
       mode: button.dataset.mode,

@@ -73,5 +73,14 @@
   },
   "buttonTitle": {
     "message": "Mit SwiftDM herunterladen"
+  },
+  "hideHere": {
+    "message": "Knopf auf dieser Seite ausblenden"
+  },
+  "hideTitle": {
+    "message": "Auf dieser Seite ausblenden"
+  },
+  "showHere": {
+    "message": "Knopf auf dieser Seite zeigen"
   }
 }

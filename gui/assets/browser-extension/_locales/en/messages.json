@@ -73,5 +73,14 @@
   },
   "buttonTitle": {
     "message": "Download with SwiftDM"
+  },
+  "hideHere": {
+    "message": "Hide the button on this site"
+  },
+  "hideTitle": {
+    "message": "Hide on this site"
+  },
+  "showHere": {
+    "message": "Show the button on this site"
   }
 }

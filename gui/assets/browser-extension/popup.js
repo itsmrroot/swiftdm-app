@@ -81,6 +81,15 @@ async function send(msg, button) {
     $(id).checked = !!s[id];
     $(id).onchange = () => ext.storage.sync.set({ [id]: $(id).checked });
   }
+  // The button of the videos, on this site (it can be closed there).
+  const host = web ? new URL(page).hostname : "";
+  $("siteButton").parentElement.hidden = !web;
+  $("siteButton").checked = !(s.hiddenSites ?? []).includes(host);
+  $("siteButton").onchange = async () => {
+    const now = (await ext.storage.sync.get("hiddenSites")).hiddenSites ?? [];
+    const rest = now.filter((h) => h !== host);
+    await ext.storage.sync.set({ hiddenSites: $("siteButton").checked ? rest : [...rest, host] });
+  };
   $("minSizeMB").value = s.minSizeMB;
   $("minSizeMB").onchange = () => ext.storage.sync.set({ minSizeMB: Math.max(0, Number($("minSizeMB").value) || 0) });
 

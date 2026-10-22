@@ -9,7 +9,7 @@ const HOST = "io.github.itsmrroot.swiftdm";
 const ext = globalThis.browser ?? globalThis.chrome;
 const t = (key) => ext.i18n.getMessage(key) || key;
 
-const DEFAULTS = { catchDownloads: true, minSizeMB: 1, videoButton: true };
+const DEFAULTS = { catchDownloads: true, minSizeMB: 1, videoButton: true, hiddenSites: [] };
 
 async function settings() {
   return { ...DEFAULTS, ...(await ext.storage.sync.get(null)) };
@@ -56,6 +56,25 @@ async function badge(ok) {
   setTimeout(() => ext.action.setBadgeText({ text: "" }), 2500);
 }
 
+/**
+ * The address a link really leads to: Google's image results and redirects
+ * wrap it ("…/imgres?imgurl=…", "…/url?q=…").
+ */
+function unwrap(url) {
+  try {
+    const u = new URL(url);
+    if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname)) {
+      const inner = u.pathname === "/imgres" ? u.searchParams.get("imgurl") : u.pathname === "/url" ? u.searchParams.get("url") || u.searchParams.get("q") : null;
+      if (/^https?:\/\//i.test(inner || "")) return inner;
+    }
+  } catch {
+    // Not an address: used as it is.
+  }
+  return url;
+}
+
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|svg|tiff?)(\?|#|$)/i;
+
 function usable(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
@@ -88,10 +107,19 @@ ext.runtime.onStartup?.addListener(createMenus);
 ext.contextMenus.onClicked.addListener(async (info, tab) => {
   const page = info.pageUrl || tab?.url || "";
   switch (info.menuItemId) {
-    case "menuLink":
-      return sendLink({ url: info.linkUrl, referer: page });
-    case "menuImage":
-      return usable(info.srcUrl) && sendLink({ url: info.srcUrl, mode: "file", referer: page });
+    case "menuLink": {
+      const url = unwrap(info.linkUrl);
+      // An image behind the link (a search result) is saved as a file.
+      return sendLink({ url, mode: url !== info.linkUrl && IMAGE_EXT.test(url) ? "file" : "auto", referer: page });
+    }
+    case "menuImage": {
+      // A picture shown from the page itself (data:) has no address; in
+      // search results the full picture is the link around it.
+      const wrapped = info.linkUrl ? unwrap(info.linkUrl) : "";
+      const url = usable(info.srcUrl) && !(wrapped !== info.linkUrl && usable(wrapped)) ? info.srcUrl : wrapped;
+      if (!usable(url)) return badge(false);
+      return sendLink({ url, mode: "file", referer: page });
+    }
     case "menuMedia": {
       if (usable(info.srcUrl)) return sendLink({ url: info.srcUrl, mode: "video", referer: page });
       // A stream in the page (blob:): the post of the video being watched
