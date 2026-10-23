@@ -240,7 +240,8 @@ impl Power {
     }
 
     /// The countdown dialog, while counting.
-    pub fn dialog(&mut self, ctx: &egui::Context, p: &Palette) -> Due {
+    /// `failed`: how many downloads failed (the message must not say that all went well).
+    pub fn dialog(&mut self, ctx: &egui::Context, p: &Palette, failed: usize) -> Due {
         let Some(at) = self.countdown else { return Due::None };
         let left = COUNTDOWN.saturating_sub(at.elapsed()).as_secs() + 1;
         let mut due = Due::None;
@@ -248,7 +249,12 @@ impl Power {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(self.after_done.icon()).size(theme::scale::ICON_XL).color(p.accent));
-                ui.label(theme::semibold(tr("All downloads are finished"), theme::scale::LEAD));
+                let title = if failed == 0 {
+                    tr("All downloads are finished").to_string()
+                } else {
+                    trf("Downloads are finished, {n} failed", &[("n", &failed)])
+                };
+                ui.label(theme::semibold(title, theme::scale::LEAD));
             });
             ui.add_space(6.0);
             let text = match self.after_done {

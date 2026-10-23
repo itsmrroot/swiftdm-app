@@ -104,13 +104,15 @@ fn look(
         return http::probe_with(url, net).map(Looked::File).map_err(other);
     }
     let by_site = media::is_media_site(url);
+    // What the plain look at the link said, if it failed.
+    let mut plain_error: Option<anyhow::Error> = None;
     if !by_site {
         // A plain file needs no yt-dlp; a web page may hold a video.
         match http::probe_with(url, net) {
             Ok(p) if !p.is_web_page() => return Ok(Looked::File(p)),
             Ok(_) => {}
-            Err(e) if media::looks_like_file(url) => return Err(other(e)),
-            Err(_) => {}
+            Err(e) if media::looks_like_file(url) || not_there(&e) => return Err(other(e)),
+            Err(e) => plain_error = Some(e),
         }
     }
     let mut browsers: Vec<Option<&str>> = vec![s.cookies_from.as_deref()];
@@ -137,11 +139,31 @@ fn look(
                     message: trl("No video, music or file was found at this link.").into(),
                 });
             }
+            // yt-dlp found nothing to say: the plain look's answer is the
+            // better one (it is in the same plain words).
+            Err(e) if e.kind == ErrorKind::Other && plain_error.is_some() => {
+                return Err(other(plain_error.take().unwrap_or_else(|| anyhow::anyhow!("{}", e.message))));
+            }
             Err(e) => return Err(LookError { kind: e.kind, message: e.message }),
         }
     }
     let e = last.unwrap_or(media::MediaError { kind: ErrorKind::Other, message: trl("Cancelled").into() });
     Err(LookError { kind: e.kind, message: e.message })
+}
+
+/// The link itself cannot be reached at all (not there, nobody answers):
+/// yt-dlp would only find that out again, slowly.
+fn not_there(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    [
+        "the file is not there any more",
+        "the server did not answer in time",
+        "the address could not be found",
+        "could not connect to the server",
+        "this is not a valid link",
+    ]
+    .iter()
+    .any(|m| text.contains(m))
 }
 
 fn capitalize(s: &str) -> String {

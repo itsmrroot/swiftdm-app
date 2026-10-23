@@ -112,6 +112,15 @@ fn main() -> eframe::Result {
         // A normal window, not a maximized one (see `App::fit_to_screen`).
         .with_maximized(false)
         .with_icon(icon());
+    // Development aid: SWIFTDM_SIZE=820x560 opens a window of that size.
+    #[cfg(debug_assertions)]
+    let viewport = match std::env::var("SWIFTDM_SIZE").ok().and_then(|v| {
+        let (w, h) = v.split_once('x')?;
+        Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?])
+    }) {
+        Some(size) => viewport.with_inner_size(size),
+        None => viewport,
+    };
     // A separate data folder (tests, portable use) keeps its own settings.
     let separate = std::env::var_os("SWIFTDM_DATA_DIR").map(|d| std::path::PathBuf::from(d).join("app"));
     // Where eframe keeps them: the file given, else after the app id.

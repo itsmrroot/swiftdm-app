@@ -452,7 +452,8 @@ impl Updater {
     /// The button that announces an update, for the top bar or the sidebar.
     pub fn button(&mut self, ui: &mut Ui, p: &Palette) {
         let Some(version) = self.available() else { return };
-        let label = format!("{}  {}", icon::ARROW_CIRCLE_UP, trf("Update to {version}", &[("version", &version)]));
+        let label =
+            crate::i18n::icon_text(icon::ARROW_CIRCLE_UP, &trf("Update to {version}", &[("version", &version)]));
         if theme::primary_button(ui, p, &label, true).clicked() {
             self.dialog = true;
         }

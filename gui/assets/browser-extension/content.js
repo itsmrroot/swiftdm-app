@@ -181,7 +181,8 @@
       if (video) place(video);
       else hideTimer = setTimeout(hide, 600);
     },
-    { passive: true },
+    // Capture: a player (YouTube's) may stop the event before it bubbles up.
+    { passive: true, capture: true },
   );
   window.addEventListener("scroll", () => target && place(target), { passive: true });
 

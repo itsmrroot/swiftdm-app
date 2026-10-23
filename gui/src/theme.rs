@@ -464,7 +464,8 @@ fn visuals(p: &Palette) -> Visuals {
     let mut v = if p.dark { Visuals::dark() } else { Visuals::light() };
     let r = CornerRadius::same(8);
     v.panel_fill = p.bg;
-    v.window_fill = p.frost(p.card, 0.95);
+    // Dialogs and menus are solid: text behind them must not show through.
+    v.window_fill = p.card;
     v.window_stroke = Stroke::new(1.0, p.border);
     v.window_corner_radius = CornerRadius::same(14);
     v.window_shadow =

@@ -213,6 +213,9 @@ fn status_line(ui: &mut Ui, p: &Palette, item: &Item) {
                 if let Some(e) = item.eta {
                     parts.push(trlf("{time} left", &[("time", &format_eta(e))]));
                 }
+                if let Some(note) = &item.note {
+                    parts.push(i18n::engine(note));
+                }
                 (parts.join("  ·  "), p.weak)
             }
         },
@@ -326,7 +329,8 @@ fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
 
 /// The four numbers above the list, in one slim strip.
 pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
-    let active = items.iter().filter(|i| i.status == Status::Active).count();
+    // As the sidebar counts them: the ones waiting for their turn too.
+    let active = items.iter().filter(|i| matches!(i.status, Status::Active | Status::Queued)).count();
     let done: Vec<&Item> = items.iter().filter(|i| i.status == Status::Done).collect();
     let bytes: u64 = done.iter().filter_map(|i| i.total).sum();
     let stats = [
@@ -344,6 +348,9 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
             ui.set_width(ui.available_width());
             // Four equal parts, each: symbol, number, what it is.
             let part = ui.available_width() / 4.0;
+            // Too narrow for the words: symbol and number only (the
+            // sidebar and the list say the rest).
+            let compact = part < 200.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (glyph, label, value, color) in stats {
@@ -351,7 +358,9 @@ pub fn stats(ui: &mut Ui, p: &Palette, items: &[Item], speed: f64) {
                         .horizontal(|ui| {
                             ui.label(RichText::new(glyph).size(theme::scale::ICON).color(color));
                             ui.label(theme::semibold(value, theme::scale::BODY));
-                            ui.label(RichText::new(label).size(theme::scale::CAPTION).color(p.weak));
+                            if !compact {
+                                ui.label(RichText::new(label).size(theme::scale::CAPTION).color(p.weak));
+                            }
                         })
                         .response
                         .rect
@@ -399,6 +408,7 @@ mod tests {
             speed: 0.0,
             eta: None,
             stage: None,
+            note: None,
             order: 0,
             work_dir: None,
         }

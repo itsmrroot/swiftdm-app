@@ -21,13 +21,15 @@ fn section(ui: &mut Ui, p: &Palette, glyph: &str, title: &str, open: bool, body:
         .inner_margin(Margin::symmetric(16, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            egui::CollapsingHeader::new(RichText::new(format!("{glyph}  {title}")).size(theme::scale::LEAD).strong())
-                .id_salt(title)
-                .default_open(open)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    body(ui)
-                });
+            egui::CollapsingHeader::new(
+                RichText::new(crate::i18n::icon_text(glyph, title)).size(theme::scale::LEAD).strong(),
+            )
+            .id_salt(title)
+            .default_open(open)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                body(ui)
+            });
         });
     ui.add_space(8.0);
 }

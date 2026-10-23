@@ -240,10 +240,45 @@ pub fn classify(stderr: &str) -> MediaError {
             ErrorKind::Forbidden,
             "The site refused the download (HTTP 403). Updating yt-dlp or logging in usually helps.".to_string(),
         )
+    } else if let Some(plain) = plain_network_error(&low) {
+        (ErrorKind::Other, plain)
     } else {
         (ErrorKind::Other, detail.to_string())
     };
     MediaError { kind, message }
+}
+
+/// What yt-dlp says about the network (Python's wording, with object
+/// addresses and all) in the plain words of SwiftDM's own messages.
+fn plain_network_error(low: &str) -> Option<String> {
+    let status = low.find("http error ").and_then(|i| {
+        let digits: String = low[i + 11..].chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u16>().ok()
+    });
+    if let Some(s) = status {
+        return Some(match s {
+            404 | 410 => format!("the file is not there any more (HTTP {s})"),
+            429 => "the server is limiting requests (HTTP 429); try again later".to_string(),
+            s if s >= 500 => format!("the server has a problem (HTTP {s}); try again later"),
+            _ => return None,
+        });
+    }
+    let has = |words: &[&str]| words.iter().any(|w| low.contains(w));
+    if has(&[
+        "name or service not known",
+        "nodename nor servname",
+        "failed to resolve",
+        "temporary failure in name resolution",
+        "getaddrinfo failed",
+    ]) {
+        Some("the address could not be found (check the link and your connection)".to_string())
+    } else if has(&["timed out", "timeout"]) {
+        Some("the server did not answer in time".to_string())
+    } else if has(&["connection refused", "connection reset"]) {
+        Some("could not connect to the server".to_string())
+    } else {
+        None
+    }
 }
 
 /// The step a `[sdm-pp]` line announces, if it starts one.
@@ -819,6 +854,19 @@ mod tests {
         assert_eq!(postprocess_stage("[sdm-pp] started|ExtractAudio"), Some("Converting the sound"));
         assert_eq!(postprocess_stage("[sdm-pp] finished|ExtractAudio"), None);
         assert_eq!(title_from_url("https://soundcloud.com/forss/paradigm-shift"), "paradigm shift");
+        // Python's own wording of network trouble, in plain words.
+        let e = classify(
+            "ERROR: [generic] Unable to download webpage: HTTP Error 404: NOT FOUND (caused by <HTTPError 404: NOT FOUND>)\n",
+        );
+        assert_eq!(e.message, "the file is not there any more (HTTP 404)");
+        let e = classify(
+            "ERROR: [generic] Unable to download webpage: (<HTTPSConnection(host='proof.ovh.net', port=443) at 0x10ee606e0>, 'Connection to proof.ovh.net timed out. (connect timeout=20.0)') (caused by TransportError(...))\n",
+        );
+        assert_eq!(e.message, "the server did not answer in time");
+        let e = classify(
+            "ERROR: [generic] Unable to download webpage: <urlopen error [Errno 8] nodename nor servname provided, or not known>\n",
+        );
+        assert_eq!(e.message, "the address could not be found (check the link and your connection)");
         let e = classify("ERROR: [generic] something odd happened\n");
         assert_eq!(e.kind, ErrorKind::Other);
         assert_eq!(e.message, "something odd happened");

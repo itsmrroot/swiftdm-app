@@ -73,6 +73,9 @@ pub struct Item {
     /// What is happening besides downloading ("Converting to MP3").
     #[serde(skip)]
     pub stage: Option<String>,
+    /// A remark while it runs: "the server limits requests".
+    #[serde(skip)]
+    pub note: Option<String>,
 }
 
 impl Item {
@@ -341,6 +344,7 @@ impl Manager {
                 speed: 0.0,
                 eta: None,
                 stage: None,
+                note: None,
             });
             s.dirty = true;
             id
@@ -541,7 +545,9 @@ impl Manager {
             s.items.iter().filter(|i| i.status == Status::Queued).map(|i| (i.order, i.added, i.id)).collect();
         waiting.sort();
         for (_, _, id) in waiting {
-            if s.running.len() >= s.settings.max_active.max(1) {
+            // A download that is being stopped does not hold its place.
+            let working = s.running.values().filter(|stop| !stop.load(Ordering::Relaxed)).count();
+            if working >= s.settings.max_active.max(1) {
                 break;
             }
             // Still stopping from before (paused and continued quickly): it
@@ -600,6 +606,9 @@ impl Manager {
     }
 
     fn fail(&self, id: u64, message: String) {
+        // In the log, so that a failure can be looked into afterwards.
+        let what = self.item(id).map(|i| i.url).unwrap_or_default();
+        log::warn!("download {id} failed: {message} ({what})");
         self.inner.update(id, |i| {
             // Paused or started again meanwhile: the user's choice stands.
             if i.status != Status::Active {
@@ -875,6 +884,15 @@ impl http::Report for Progress {
         let r = resume.clone();
         self.inner.update(self.id, |i| i.resume = Some(r));
         self.inner.lock().dirty = true;
+    }
+
+    fn limited(&self, on: bool) {
+        let note = on.then(|| "the server limits requests: fewer connections".to_string());
+        self.inner.update(self.id, |i| {
+            if i.note != note {
+                i.note = note;
+            }
+        });
     }
 
     fn live(&self, resume: &Resume) {

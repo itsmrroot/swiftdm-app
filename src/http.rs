@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -20,8 +20,13 @@ use serde::{Deserialize, Serialize};
 use crate::util::{part_path, percent_decode, sanitize_filename, unique_path};
 
 /// Some sites refuse requests that do not look like a browser.
-pub const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+pub const USER_AGENT: &str = if cfg!(target_os = "macos") {
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+} else if cfg!(windows) {
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+} else {
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+};
 
 /// Segments are not split below this size.
 const MIN_SPLIT: u64 = 1024 * 1024;
@@ -295,6 +300,8 @@ pub trait Report: Sync {
     /// Where each connection is now, several times a second: for showing,
     /// not for saving.
     fn live(&self, _resume: &Resume) {}
+    /// The server limits requests, so fewer connections are used (`true`).
+    fn limited(&self, _on: bool) {}
 }
 
 /// How a download ended, when it did not fail.
@@ -353,7 +360,7 @@ pub fn download(
             let target = Target { url: &probe.url, part: &part, size, validator: probe.validator.clone(), net: &net };
             ranged(target, job.connections.clamp(1, 32), job.resume, stop, limiter, report)?
         }
-        None => single(&probe.url, &net, &part, probe.size, stop, limiter, report)?,
+        None => single(&probe.url, &net, &part, stop, limiter, report)?,
     };
     if let Step::Stopped(resume) = outcome {
         return Ok(Outcome::Stopped(resume));
@@ -380,7 +387,6 @@ fn single(
     url: &str,
     net: &Net,
     part: &Path,
-    size: Option<u64>,
     stop: &AtomicBool,
     limiter: &Limiter,
     report: &dyn Report,
@@ -392,6 +398,10 @@ fn single(
     if status >= 400 {
         return Err(anyhow!("{}", status_message(status)).into());
     }
+    // The size this answer says, not the one of the first look: a page made
+    // for each request (an API, a random picture) may differ in size.
+    let size =
+        resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
     let mut file = File::create(part).with_context(|| format!("cannot write {}", part.display()))?;
     // The body is read on its own thread: a server that stalls would
     // otherwise block a read, and with it pausing and quitting.
@@ -475,6 +485,11 @@ struct Shared<'a> {
     limiter: &'a Limiter,
     validator: Option<String>,
     net: &'a Net,
+    /// How many connections are still working (not ended, not stepped
+    /// aside): when the server says "too many requests" (HTTP 429/503) one
+    /// steps aside, but never the last.
+    staying: AtomicUsize,
+    limited: AtomicBool,
 }
 
 impl Shared<'_> {
@@ -512,18 +527,50 @@ impl Shared<'_> {
 
     /// Runs one connection until no work is left.
     fn connection(&self) {
+        let mut gone = false;
+        self.work(&mut gone);
+        if !gone {
+            self.staying.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `gone` is set when this connection stepped aside (and was counted).
+    fn work(&self, gone: &mut bool) {
         let mut buf = vec![0; CHUNK];
         while let Some(i) = self.claim() {
-            if let Err(e) = self.segment(i, &mut buf) {
-                let mut f = self.failure.lock().unwrap_or_else(|e| e.into_inner());
-                f.get_or_insert(e);
-                self.halt.store(true, Ordering::Relaxed);
-            }
+            let result = self.segment(i, &mut buf);
             self.segs()[i].taken = false;
+            match result {
+                Ok(()) => {}
+                // This connection steps aside; the others take its part.
+                Err(e) if e.downcast_ref::<StepAside>().is_some() => {
+                    *gone = true;
+                    return;
+                }
+                Err(e) => {
+                    let mut f = self.failure.lock().unwrap_or_else(|e| e.into_inner());
+                    f.get_or_insert(e);
+                    self.halt.store(true, Ordering::Relaxed);
+                }
+            }
             if self.halted() {
                 return;
             }
         }
+    }
+
+    /// The server limits requests: one connection fewer, never none.
+    /// Returns whether this connection should step aside.
+    fn throttle(&self) -> bool {
+        self.limited.store(true, Ordering::Relaxed);
+        let mut n = self.staying.load(Ordering::Relaxed);
+        while n > 1 {
+            match self.staying.compare_exchange(n, n - 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
+        false
     }
 
     /// Downloads segment `i`, reconnecting as needed.
@@ -552,13 +599,20 @@ impl Shared<'_> {
                 Err(e) => e,
             };
             let fatal = e.downcast_ref::<Fatal>().is_some();
+            let limited = e.downcast_ref::<RateLimited>().map(|r| r.retry_after);
+            if limited.is_some() && self.throttle() {
+                log::info!("the server limits requests: one connection fewer ({e:#})");
+                return Err(StepAside.into());
+            }
             failures += 1;
             if fatal || failures >= MAX_FAILURES {
                 return Err(e);
             }
             log::info!("connection retry {failures}: {e:#}");
-            // Wait a little longer each time, but react to a stop.
-            let until = Instant::now() + Duration::from_secs(1 << failures.min(4));
+            // Wait a little longer each time (as long as the server asks,
+            // at most a minute), but react to a stop.
+            let wait = Duration::from_secs((1 << failures.min(4)).max(limited.flatten().unwrap_or(0).min(60)));
+            let until = Instant::now() + wait;
             while Instant::now() < until && !self.halted() {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -568,18 +622,41 @@ impl Shared<'_> {
     /// One request for bytes `pos..=end` of segment `i`. Returns whether any
     /// bytes arrived; a timeout after progress is a normal renewal.
     fn request(&self, agent: &ureq::Agent, i: usize, pos: u64, end: u64, buf: &mut [u8]) -> Result<bool> {
-        let mut req = get(agent, self.url, self.net).header("Range", format!("bytes={pos}-{end}"));
         // The file changed on the server meanwhile: the server sends it whole
         // (200) instead of the part, which ends this download rather than
         // mixing two versions. Weak ETags cannot be used for this.
-        if let Some(v) = self.validator.as_deref().filter(|v| !v.starts_with("W/")) {
-            req = req.header("If-Range", v);
-        }
-        let mut resp = req.call().map_err(net_error)?;
+        let if_range = self.validator.clone().filter(|v| !v.starts_with("W/"));
+        // The answer is waited for in a helper thread, so that pausing does
+        // not have to wait for a server that does not answer.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (agent, url, net) = (agent.clone(), self.url.to_string(), self.net.clone());
+        std::thread::spawn(move || {
+            let mut req = get(&agent, &url, &net).header("Range", format!("bytes={pos}-{end}"));
+            if let Some(v) = if_range {
+                req = req.header("If-Range", v);
+            }
+            let _ = tx.send(req.call());
+        });
+        let mut resp = loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => break answer.map_err(net_error)?,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if self.halted() => return Ok(false),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("the connection was lost (closed)"),
+            }
+        };
         match resp.status().as_u16() {
             206 => {}
             200 => return Err(Fatal("the server stopped allowing resumed downloads".into()).into()),
             s @ (401 | 403 | 404 | 410) => return Err(Fatal(status_message(s)).into()),
+            s @ (429 | 503) => {
+                let retry_after = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok());
+                return Err(RateLimited { message: status_message(s), retry_after }.into());
+            }
             s => bail!("{}", status_message(s)),
         }
         // The part asked for, not another one.
@@ -623,6 +700,34 @@ impl Shared<'_> {
         }
     }
 }
+
+/// The server says "too many requests" (HTTP 429, or 503 asking to wait).
+#[derive(Debug)]
+struct RateLimited {
+    message: String,
+    /// Seconds, when the server said how long to wait.
+    retry_after: Option<u64>,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+/// A connection leaves the work to the others (see [`Shared::throttle`]).
+#[derive(Debug)]
+struct StepAside;
+
+impl std::fmt::Display for StepAside {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stepped aside")
+    }
+}
+
+impl std::error::Error for StepAside {}
 
 /// An error that retrying will not fix.
 #[derive(Debug)]
@@ -692,6 +797,8 @@ fn ranged(
         limiter,
         validator,
         net,
+        staying: AtomicUsize::new(connections),
+        limited: AtomicBool::new(false),
     };
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..connections).map(|_| scope.spawn(|| shared.connection())).collect();
@@ -702,6 +809,7 @@ fn ranged(
             let snap = shared.snapshot(size);
             report.progress(snap.done(), Some(size));
             report.live(&snap);
+            report.limited(shared.limited.load(Ordering::Relaxed));
             if last_checkpoint.elapsed() >= Duration::from_secs(3) {
                 report.checkpoint(&snap);
                 last_checkpoint = Instant::now();
@@ -938,6 +1046,8 @@ mod tests {
             limiter: &limiter,
             validator: None,
             net: &Net::default(),
+            staying: AtomicUsize::new(1),
+            limited: AtomicBool::new(false),
         };
         assert_eq!(shared.claim(), Some(0));
         // The only segment is taken: the next connection splits it in half.

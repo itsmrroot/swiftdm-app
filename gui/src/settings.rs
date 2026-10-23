@@ -177,20 +177,38 @@ fn browser_choices() -> Vec<(&'static str, &'static str)> {
 
 fn row(ui: &mut Ui, p: &Palette, label: &str, hint: &str, add: impl FnOnce(&mut Ui)) {
     // Label and controls start on the same line; every row has the same
-    // space below it.
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(260.0);
+    // space below it. Right to left: the label on the right.
+    let rtl = crate::i18n::is_rtl();
+    let (line, column, controls) = if rtl {
+        (
+            egui::Layout::right_to_left(egui::Align::Min),
+            egui::Layout::top_down(egui::Align::Max),
+            egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true),
+        )
+    } else {
+        (
+            egui::Layout::left_to_right(egui::Align::Min),
+            egui::Layout::top_down(egui::Align::Min),
+            egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+        )
+    };
+    // The label column gives way when the window is narrow.
+    let label_width = (ui.available_width() * 0.4).clamp(130.0, 260.0);
+    ui.with_layout(line, |ui| {
+        ui.allocate_ui_with_layout(egui::vec2(label_width, 0.0), column, |ui| {
+            ui.set_width(label_width);
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.add_space(5.0);
             ui.label(RichText::new(label).size(theme::scale::BODY));
             if !hint.is_empty() {
-                theme::paragraph(ui, hint, 12.5, p.weak);
+                theme::paragraph(ui, hint, theme::scale::CAPTION, p.weak);
             }
         });
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
-            ui.horizontal_wrapped(|ui| {
+            // What does not fit goes to the next line, text included.
+            ui.set_max_width(ui.available_width());
+            ui.with_layout(controls, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 add(ui);
             });
@@ -256,15 +274,20 @@ pub struct Context<'a> {
 pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Context) {
     theme::page_title(ui, p, tr("Settings"), tr("Changes apply right away."));
     // The tabs.
-    ui.horizontal_wrapped(|ui| {
+    let tabs = if crate::i18n::is_rtl() {
+        egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true)
+    };
+    ui.with_layout(tabs, |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         for t in Tab::ALL {
             let (glyph, label) = t.label();
             let on = page.tab == t;
             let text = if on {
-                theme::semibold(format!("{glyph}  {label}"), theme::scale::BODY).color(p.on_accent)
+                theme::semibold(crate::i18n::icon_text(glyph, label), theme::scale::BODY).color(p.on_accent)
             } else {
-                RichText::new(format!("{glyph}  {label}")).size(theme::scale::BODY)
+                RichText::new(crate::i18n::icon_text(glyph, label)).size(theme::scale::BODY)
             };
             let b = egui::Button::new(text)
                 .fill(if on { p.accent_fill } else { p.card })

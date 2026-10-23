@@ -169,6 +169,14 @@ pub fn trf(en: &'static str, args: &[(&str, &dyn Display)]) -> String {
     }
 }
 
+/// An icon and a label that is already in display order (`tr`): the icon
+/// first, or, reading right to left, after the text (to its right), with a
+/// space the Arabic font does not make too narrow.
+pub fn icon_text(icon: &str, label: &str) -> String {
+    // U+2003: a wide space, which the Arabic font does not shrink.
+    if is_rtl() { format!("{label}\u{2003}{icon}") } else { format!("{icon}  {label}") }
+}
+
 /// An icon followed by a translated label.
 pub fn icon_label(icon: &str, en: &'static str) -> String {
     let s = format!("{icon} {}", lookup(en));
@@ -210,6 +218,7 @@ pub const ENGINE: &[&str] = &[
     "the server did not answer in time",
     "the address could not be found (check the link and your connection)",
     "could not connect to the server",
+    "the server limits requests: fewer connections",
     "the proxy address is not valid: {…}",
     "the link redirects too often",
     "this is not a valid link",

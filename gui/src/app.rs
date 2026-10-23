@@ -586,6 +586,12 @@ impl App {
         if self.fitted {
             return;
         }
+        // Development aid: a size given by SWIFTDM_SIZE stays.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SWIFTDM_SIZE").is_some() {
+            self.fitted = true;
+            return;
+        }
         let (monitor, outer) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().outer_rect));
         let Some(monitor) = monitor.filter(|m| m.x > 100.0 && m.y > 100.0) else { return };
         self.fitted = true;
@@ -742,11 +748,23 @@ impl App {
 
     /// The bar at the top: the name, and the settings changed most often.
     fn header(&mut self, ui: &mut Ui, p: &Palette) {
-        ui.horizontal_centered(|ui| {
+        // Narrow (a small window, a large zoom): the chips are symbols only
+        // (their tooltips say the rest) and the name goes.
+        let compact = ui.available_width() < 900.0;
+        // Right to left: the name on the right, the chips on the left.
+        let rtl = i18n::is_rtl();
+        let (outer, inner) = if rtl {
+            (Layout::right_to_left(Align::Center), Layout::left_to_right(Align::Center))
+        } else {
+            (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center))
+        };
+        ui.with_layout(outer, |ui| {
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
             ui.add_space(2.0);
-            ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if !compact {
+                ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
+            }
+            ui.with_layout(inner, |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let chip = |text: String, on: bool| {
                     egui::Button::new(RichText::new(text).size(theme::scale::CAPTION).color(if on {
@@ -765,7 +783,7 @@ impl App {
                 // Stays open while sliders and boxes are used.
                 let keep_open = egui::containers::menu::MenuConfig::new()
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                egui::containers::menu::MenuButton::from_button(chip(icon::SLIDERS_HORIZONTAL.to_string(), false))
+                EndMenu::from_button(chip(icon::SLIDERS_HORIZONTAL.to_string(), false))
                     .config(keep_open)
                     .ui(ui, |ui| {
                         ui.set_min_width(300.0);
@@ -824,7 +842,7 @@ impl App {
                 }
                 // Language.
                 let lang = self.settings.language;
-                egui::containers::menu::MenuButton::from_button(chip(icon::GLOBE.to_string(), false))
+                EndMenu::from_button(chip(icon::GLOBE.to_string(), false))
                     .ui(ui, |ui| {
                         for l in i18n::Language::ALL {
                             if ui.selectable_label(lang == l, l.label().as_ref()).clicked() {
@@ -836,7 +854,7 @@ impl App {
                     .on_hover_text(tr("Language"));
                 // Theme.
                 let theme_icon = if ui.visuals().dark_mode { icon::MOON } else { icon::SUN };
-                egui::containers::menu::MenuButton::from_button(chip(theme_icon.to_string(), false))
+                EndMenu::from_button(chip(theme_icon.to_string(), false))
                     .ui(ui, |ui| {
                         for t in ThemeChoice::ALL {
                             if ui.selectable_label(self.settings.theme == t, t.name()).clicked() {
@@ -848,22 +866,30 @@ impl App {
                     .on_hover_text(tr("Theme"));
                 // When done.
                 let a = self.power.after_done;
-                egui::containers::menu::MenuButton::from_button(chip(
-                    format!("{}  {}", a.icon(), if a == AfterDone::Nothing { tr("When done") } else { a.name() }),
+                EndMenu::from_button(chip(
+                    if compact {
+                        a.icon().to_string()
+                    } else {
+                        i18n::icon_text(a.icon(), if a == AfterDone::Nothing { tr("When done") } else { a.name() })
+                    },
                     a != AfterDone::Nothing,
                 ))
                 .ui(ui, |ui| {
                     ui.label(RichText::new(tr("When downloads are done")).color(p.weak).size(theme::scale::CAPTION));
                     for x in AfterDone::ALL {
-                        if ui.selectable_label(a == x, format!("{}  {}", x.icon(), x.name())).clicked() {
+                        if ui.selectable_label(a == x, i18n::icon_text(x.icon(), x.name())).clicked() {
                             self.power.after_done = x;
                         }
                     }
                 });
                 // Downloads at once.
                 let n = self.settings.max_active;
-                egui::containers::menu::MenuButton::from_button(chip(
-                    format!("{}  {}", icon::STACK, i18n::trf("{n} at once", &[("n", &n)])),
+                EndMenu::from_button(chip(
+                    if compact {
+                        format!("{}  {n}", icon::STACK)
+                    } else {
+                        i18n::icon_text(icon::STACK, &i18n::trf("{n} at once", &[("n", &n)]))
+                    },
                     false,
                 ))
                 .ui(ui, |ui| {
@@ -883,28 +909,36 @@ impl App {
                 } else {
                     format!("{}/s", swiftdm::util::format_size(kb * 1024))
                 };
-                egui::containers::menu::MenuButton::from_button(chip(format!("{}  {shown}", icon::LIGHTNING), kb > 0))
-                    .ui(ui, |ui| {
-                        ui.label(RichText::new(tr("Speed limit")).color(p.weak).size(theme::scale::CAPTION));
-                        for x in [0u64, 256, 512, 1024, 2048, 5120, 10240] {
-                            let label = if x == 0 {
-                                tr("Unlimited").to_string()
-                            } else {
-                                format!("{}/s", swiftdm::util::format_size(x * 1024))
-                            };
-                            if ui.selectable_label(kb == x, label).clicked() {
-                                self.settings.speed_limit_kb = x;
-                            }
+                EndMenu::from_button(chip(
+                    if compact && kb == 0 {
+                        icon::LIGHTNING.to_string()
+                    } else {
+                        format!("{}  {shown}", icon::LIGHTNING)
+                    },
+                    kb > 0,
+                ))
+                .ui(ui, |ui| {
+                    ui.label(RichText::new(tr("Speed limit")).color(p.weak).size(theme::scale::CAPTION));
+                    for x in [0u64, 256, 512, 1024, 2048, 5120, 10240] {
+                        let label = if x == 0 {
+                            tr("Unlimited").to_string()
+                        } else {
+                            format!("{}/s", swiftdm::util::format_size(x * 1024))
+                        };
+                        if ui.selectable_label(kb == x, label).clicked() {
+                            self.settings.speed_limit_kb = x;
                         }
-                    })
-                    .0
-                    .on_hover_text(tr("Speed limit"));
+                    }
+                })
+                .0
+                .on_hover_text(tr("Speed limit"));
                 // The browser extension.
                 let connected = self.browser_seen.is_some();
-                let label = if connected {
-                    format!("{}  {}", icon::CHECK_CIRCLE, tr("Browser"))
-                } else {
-                    format!("{}  {}", icon::PUZZLE_PIECE, tr("Add to browser"))
+                let label = match (connected, compact) {
+                    (true, true) => icon::CHECK_CIRCLE.to_string(),
+                    (false, true) => icon::PUZZLE_PIECE.to_string(),
+                    (true, false) => i18n::icon_text(icon::CHECK_CIRCLE, tr("Browser")),
+                    (false, false) => i18n::icon_text(icon::PUZZLE_PIECE, tr("Add to browser")),
                 };
                 let tip = if connected {
                     tr("The browser extension is connected")
@@ -926,35 +960,17 @@ impl App {
 
     fn sidebar(&mut self, ui: &mut Ui, p: &Palette, items: &[Item]) {
         ui.add_space(6.0);
-        // Settings and friends stay at the bottom; the filters scroll above.
-        egui::Panel::bottom("sidebar-bottom").resizable(false).show_separator_line(false).frame(Frame::NONE).show(
-            ui,
-            |ui| {
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    ui.add_space(14.0);
-                    let version = i18n::trf("Version {version}", &[("version", &update::current())]);
-                    ui.label(RichText::new(version).color(p.weak).size(theme::scale::CAPTION));
-                    ui.add_space(4.0);
-                    if nav_item(ui, p, icon::INFO, tr("About"), self.page == Page::About, None).clicked() {
-                        self.page = Page::About;
-                    }
-                    if nav_item(ui, p, icon::QUESTION, tr("Help"), self.page == Page::Help, None).clicked() {
-                        self.page = Page::Help;
-                    }
-                    let badge = self.updater.available().map(|_| "●");
-                    if nav_item(ui, p, icon::GEAR_SIX, tr("Settings"), self.page == Page::Settings, badge).clicked() {
-                        self.page = Page::Settings;
-                    }
-                    if nav_item(ui, p, icon::FOLDER_OPEN, tr("Download folder"), false, None).clicked() {
-                        let _ = std::fs::create_dir_all(&self.settings.download_dir);
-                        let _ = swiftdm::util::open_path(&self.settings.download_dir);
-                    }
-                    // The pages below, the lists above.
-                    ui.add_space(4.0);
-                    ui.add(egui::Separator::default().spacing(8.0));
-                });
-            },
-        );
+        // Room for the lists and the pages below them: the pages stay at the
+        // bottom. In a short window (or a large zoom) they follow the lists
+        // instead, so that nothing is hidden: it all scrolls.
+        let short = ui.available_height() < 560.0;
+        if !short {
+            egui::Panel::bottom("sidebar-bottom")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::NONE)
+                .show(ui, |ui| self.sidebar_pages(ui, p));
+        }
         ui.add_space(14.0);
         let count = |f: Filter| items.iter().filter(|i| f.matches(i)).count();
         let on_list = self.page == Page::Downloads;
@@ -974,7 +990,35 @@ impl App {
                     self.page = Page::Downloads;
                 }
             }
+            if short {
+                ui.add_space(8.0);
+                self.sidebar_pages(ui, p);
+            }
         });
+    }
+
+    /// The line, then Download folder, Settings, Help, About and the version.
+    fn sidebar_pages(&mut self, ui: &mut Ui, p: &Palette) {
+        ui.add(egui::Separator::default().spacing(8.0));
+        ui.add_space(4.0);
+        if nav_item(ui, p, icon::FOLDER_OPEN, tr("Download folder"), false, None).clicked() {
+            let _ = std::fs::create_dir_all(&self.settings.download_dir);
+            let _ = swiftdm::util::open_path(&self.settings.download_dir);
+        }
+        let badge = self.updater.available().map(|_| "●");
+        if nav_item(ui, p, icon::GEAR_SIX, tr("Settings"), self.page == Page::Settings, badge).clicked() {
+            self.page = Page::Settings;
+        }
+        if nav_item(ui, p, icon::QUESTION, tr("Help"), self.page == Page::Help, None).clicked() {
+            self.page = Page::Help;
+        }
+        if nav_item(ui, p, icon::INFO, tr("About"), self.page == Page::About, None).clicked() {
+            self.page = Page::About;
+        }
+        ui.add_space(4.0);
+        let version = i18n::trf("Version {version}", &[("version", &update::current())]);
+        ui.label(RichText::new(version).color(p.weak).size(theme::scale::CAPTION));
+        ui.add_space(14.0);
     }
 
     fn link_bar(&mut self, ui: &mut Ui, p: &Palette) {
@@ -1070,6 +1114,58 @@ impl App {
         }
     }
 
+    /// What goes beside the title of the list: type, search, and the
+    /// buttons for all of them.
+    fn list_controls(&mut self, ui: &mut Ui, items: &[Item], narrow: bool) {
+        let done = items.iter().filter(|i| i.status == Status::Done).count();
+        if done > 0
+            && ui
+                .button(icon_label(icon::BROOM, "Clear completed"))
+                .on_hover_text(tr("Remove finished downloads from the list (the files stay)"))
+                .clicked()
+        {
+            self.manager.clear_finished();
+        }
+        if items.iter().any(|i| i.status == Status::Paused)
+            && ui.button(icon_label(icon::PLAY, "Continue all")).clicked()
+        {
+            self.manager.resume_all();
+        }
+        if items.iter().any(|i| matches!(i.status, Status::Active | Status::Queued))
+            && ui.button(icon_label(icon::PAUSE, "Pause all")).clicked()
+        {
+            self.manager.pause_all();
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text(icon_label(icon::MAGNIFYING_GLASS, "Search"))
+                .desired_width(if narrow { 150.0 } else { 200.0 }),
+        );
+        // Only one kind of file: video, music, pictures, ….
+        let label = match self.kind_filter {
+            Some(k) => i18n::icon_text(list::kind_icon(k), list::kind_name(k)),
+            None => icon_label(icon::FUNNEL, "All types"),
+        };
+        egui::containers::menu::MenuButton::new(label).ui(ui, |ui| {
+            ui.selectable_value(&mut self.kind_filter, None, tr("All types"));
+            for k in [
+                FileKind::Video,
+                FileKind::Audio,
+                FileKind::Image,
+                FileKind::Archive,
+                FileKind::Program,
+                FileKind::Document,
+                FileKind::Other,
+            ] {
+                let n = items.iter().filter(|i| i.kind() == k).count();
+                if n > 0 || self.kind_filter == Some(k) {
+                    let text = format!("{}  {}  ({n})", list::kind_icon(k), list::kind_name(k));
+                    ui.selectable_value(&mut self.kind_filter, Some(k), text);
+                }
+            }
+        });
+    }
+
     fn downloads_page(&mut self, ui: &mut Ui, p: &Palette, items: &[Item]) {
         let ctx = ui.ctx().clone();
         self.link_bar(ui, p);
@@ -1087,59 +1183,21 @@ impl App {
                 q.is_empty() || i.display_name().to_lowercase().contains(&q) || i.url.to_lowercase().contains(&q)
             })
             .collect();
-        ui.horizontal(|ui| {
-            ui.label(theme::semibold(self.filter.title(), theme::scale::LEAD));
-            ui.label(RichText::new(shown.len().to_string()).color(p.weak));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let done = items.iter().filter(|i| i.status == Status::Done).count();
-                if done > 0
-                    && ui
-                        .button(icon_label(icon::BROOM, "Clear completed"))
-                        .on_hover_text(tr("Remove finished downloads from the list (the files stay)"))
-                        .clicked()
-                {
-                    self.manager.clear_finished();
-                }
-                if items.iter().any(|i| i.status == Status::Paused)
-                    && ui.button(icon_label(icon::PLAY, "Continue all")).clicked()
-                {
-                    self.manager.resume_all();
-                }
-                if items.iter().any(|i| matches!(i.status, Status::Active | Status::Queued))
-                    && ui.button(icon_label(icon::PAUSE, "Pause all")).clicked()
-                {
-                    self.manager.pause_all();
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(icon_label(icon::MAGNIFYING_GLASS, "Search"))
-                        .desired_width(200.0),
-                );
-                // Only one kind of file: video, music, pictures, ….
-                let label = match self.kind_filter {
-                    Some(k) => format!("{}  {}", list::kind_icon(k), list::kind_name(k)),
-                    None => icon_label(icon::FUNNEL, "All types"),
-                };
-                egui::containers::menu::MenuButton::new(label).ui(ui, |ui| {
-                    ui.selectable_value(&mut self.kind_filter, None, tr("All types"));
-                    for k in [
-                        FileKind::Video,
-                        FileKind::Audio,
-                        FileKind::Image,
-                        FileKind::Archive,
-                        FileKind::Program,
-                        FileKind::Document,
-                        FileKind::Other,
-                    ] {
-                        let n = items.iter().filter(|i| i.kind() == k).count();
-                        if n > 0 || self.kind_filter == Some(k) {
-                            let text = format!("{}  {}  ({n})", list::kind_icon(k), list::kind_name(k));
-                            ui.selectable_value(&mut self.kind_filter, Some(k), text);
-                        }
-                    }
-                });
+        let narrow = ui.available_width() < 800.0;
+        if narrow {
+            // Two lines: the title, then the controls (which wrap).
+            ui.horizontal(|ui| {
+                ui.label(theme::semibold(self.filter.title(), theme::scale::LEAD));
+                ui.label(RichText::new(shown.len().to_string()).color(p.weak));
             });
-        });
+            ui.horizontal_wrapped(|ui| self.list_controls(ui, items, true));
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(theme::semibold(self.filter.title(), theme::scale::LEAD));
+                ui.label(RichText::new(shown.len().to_string()).color(p.weak));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.list_controls(ui, items, false));
+            });
+        }
         ui.add_space(8.0);
 
         if shown.is_empty() {
@@ -1477,7 +1535,9 @@ impl eframe::App for App {
                 bottom: 0,
             }))
             .show(ui, |ui| self.header(ui, &p));
-        egui::Panel::left("sidebar")
+        // Right to left: the sidebar is on the right.
+        let sidebar = if i18n::is_rtl() { egui::Panel::right("sidebar") } else { egui::Panel::left("sidebar") };
+        sidebar
             .exact_size(232.0)
             .resizable(false)
             .frame(Frame::new().fill(p.bar()).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0)))
@@ -1515,7 +1575,8 @@ impl eframe::App for App {
         self.poll_adds(&ctx, &p);
         self.delete_dialog(&ctx, &p);
         self.updater.dialog(&ctx, &p, self.manager.busy());
-        let due = self.power.dialog(&ctx, &p);
+        let failed = items.iter().filter(|i| i.status == Status::Failed).count();
+        let due = self.power.dialog(&ctx, &p, failed);
         self.on_due(&ctx, due);
         self.toasts_ui(&ctx, &p);
 
@@ -1545,6 +1606,42 @@ impl eframe::App for App {
     }
 }
 
+/// A menu button like egui's, whose menu is lined up with the button's
+/// right edge (and so stays inside the window, for the buttons at the right
+/// end of the top bar).
+struct EndMenu<'a> {
+    button: egui::Button<'a>,
+    config: Option<egui::containers::menu::MenuConfig>,
+}
+
+impl<'a> EndMenu<'a> {
+    fn from_button(button: egui::Button<'a>) -> Self {
+        EndMenu { button, config: None }
+    }
+
+    fn config(mut self, config: egui::containers::menu::MenuConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    fn ui<R>(
+        self,
+        ui: &mut Ui,
+        content: impl FnOnce(&mut Ui) -> R,
+    ) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+        use egui::containers::menu::MenuConfig;
+        let response = ui.add(self.button);
+        let config = self.config.unwrap_or_default();
+        let inner = egui::Popup::menu(&response)
+            .align(egui::RectAlign::BOTTOM_END)
+            .close_behavior(config.close_behavior)
+            .style(config.style.clone())
+            .info(egui::UiStackInfo::new(egui::UiKind::Menu).with_tag_value(MenuConfig::MENU_CONFIG_TAG, config))
+            .show(content);
+        (response, inner)
+    }
+}
+
 fn group_label(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -1556,12 +1653,21 @@ fn group_label(ui: &mut Ui, p: &Palette, text: &str) {
 fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, badge: Option<&str>) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Right to left: the symbol and the name on the right, the number left.
+    let rtl = i18n::is_rtl();
+    let at = |from_start: f32| if rtl { rect.right() - from_start } else { rect.left() + from_start };
+    let (start, end) = if rtl {
+        (egui::Align2::RIGHT_CENTER, egui::Align2::LEFT_CENTER)
+    } else {
+        (egui::Align2::LEFT_CENTER, egui::Align2::RIGHT_CENTER)
+    };
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if active {
             painter.rect_filled(rect, CornerRadius::same(10), p.tint(p.accent));
+            let bar_x = if rtl { rect.right() - 3.0 } else { rect.left() };
             painter.rect_filled(
-                egui::Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)),
+                egui::Rect::from_min_size(egui::pos2(bar_x, rect.top() + 8.0), Vec2::new(3.0, rect.height() - 16.0)),
                 CornerRadius::same(2),
                 p.accent,
             );
@@ -1571,15 +1677,15 @@ fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, ba
         let color = if active { p.text } else { p.weak };
         let y = rect.center().y;
         painter.text(
-            egui::pos2(rect.left() + 14.0, y),
-            egui::Align2::LEFT_CENTER,
+            egui::pos2(at(14.0), y),
+            start,
             glyph,
             egui::FontId::proportional(theme::scale::ICON),
             if active { p.accent } else { color },
         );
         painter.text(
-            egui::pos2(rect.left() + 42.0, y),
-            egui::Align2::LEFT_CENTER,
+            egui::pos2(at(42.0), y),
+            start,
             label,
             egui::FontId::new(theme::scale::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
             color,
@@ -1587,8 +1693,8 @@ fn nav_item(ui: &mut Ui, p: &Palette, glyph: &str, label: &str, active: bool, ba
         if let Some(b) = badge {
             let c = if b == "●" { p.accent } else { p.weak };
             painter.text(
-                egui::pos2(rect.right() - 12.0, y),
-                egui::Align2::RIGHT_CENTER,
+                egui::pos2(at(rect.width() - 12.0), y),
+                end,
                 b,
                 egui::FontId::proportional(theme::scale::CAPTION),
                 c,
