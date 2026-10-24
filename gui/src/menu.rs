@@ -131,13 +131,13 @@ pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice)
     };
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(tr("File"), |ui| {
-            item(ui, &format!("{}…", tr("New download")), "Ctrl+N", Command::NewDownload);
+            item(ui, &crate::i18n::ellipsis(tr("New download")), "Ctrl+N", Command::NewDownload);
             item(ui, tr("Download copied link"), "Ctrl+Shift+V", Command::PasteLink);
             item(ui, tr("Import links from a file…"), "Ctrl+O", Command::ImportLinks);
             ui.separator();
             item(ui, tr("Open download folder"), "Ctrl+Shift+O", Command::OpenFolder);
             ui.separator();
-            item(ui, &format!("{}…", tr("Settings")), "Ctrl+,", Command::Settings);
+            item(ui, &crate::i18n::ellipsis(tr("Settings")), "Ctrl+,", Command::Settings);
             ui.separator();
             item(ui, tr("Quit SwiftDM"), "Ctrl+Q", Command::Quit);
         });
@@ -185,7 +185,7 @@ pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice)
                 }
             });
             ui.separator();
-            item(ui, &format!("{}…", tr("Add SwiftDM to your browser")), "", Command::AddToBrowser);
+            item(ui, &crate::i18n::ellipsis(tr("Add SwiftDM to your browser")), "", Command::AddToBrowser);
         });
         ui.menu_button(tr("Window"), |ui| {
             item(ui, tr("Minimize"), "", Command::Minimize);
@@ -317,7 +317,7 @@ mod imp {
             let zin = self.item(tr("Zoom In"), Command::ZoomIn, acc(cmd, Code::Equal));
             let zout = self.item(tr("Zoom Out"), Command::ZoomOut, acc(cmd, Code::Minus));
             let theme_items: Vec<MenuItem> =
-                ThemeChoice::ALL.iter().map(|t| self.item(t.name(), Command::Theme(*t), None)).collect();
+                ThemeChoice::ALL.iter().map(|t| self.item(t.name_logical(), Command::Theme(*t), None)).collect();
             let theme_refs: Vec<&dyn muda::IsMenuItem> =
                 theme_items.iter().map(|i| i as &dyn muda::IsMenuItem).collect();
             let themes = Submenu::with_items(tr("Theme"), true, &theme_refs)?;
@@ -332,7 +332,7 @@ mod imp {
             let resume = self.item(tr("Continue all"), Command::ResumeAll, acc(cmd_shift, Code::KeyR));
             let clear = self.item(tr("Clear completed"), Command::ClearCompleted, None);
             let done_items: Vec<MenuItem> =
-                AfterDone::ALL.iter().map(|a| self.item(a.name(), Command::AfterDone(*a), None)).collect();
+                AfterDone::ALL.iter().map(|a| self.item(a.name_logical(), Command::AfterDone(*a), None)).collect();
             let done_refs: Vec<&dyn muda::IsMenuItem> = done_items.iter().map(|i| i as &dyn muda::IsMenuItem).collect();
             let when_done = Submenu::with_items(tr("When downloads are done"), true, &done_refs)?;
             let browser = self.item(&format!("{}…", tr("Add SwiftDM to your browser")), Command::AddToBrowser, None);

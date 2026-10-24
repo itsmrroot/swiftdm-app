@@ -1,8 +1,8 @@
 [package]
 name = "swiftdm-gui"
-version = "1.6.1"
+version = "1.6.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Desktop app for SwiftDM"
 authors = ["Bashar Salmo"]
 license = "MIT"
@@ -24,7 +24,7 @@ sha2 = "0.11.0"
 ron = "0.12.2"
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 sys-locale = "0.3.2"
-swiftdm = { version = "1.6.1", path = ".." }
+swiftdm = { version = "1.6.2", path = ".." }
 unicode-bidi = "0.3.18"
 ureq = "3.4.2"
 

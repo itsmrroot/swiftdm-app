@@ -271,7 +271,11 @@ impl App {
         }
         let want = (self.settings.accent, self.settings.ui_scale, self.settings.theme, self.settings.glass);
         theme::set_glass(self.settings.glass);
-        if self.applied != Some(want) {
+        // Not while the mouse is down: the slider itself changes size with
+        // the zoom, which would make it jump under the pointer.
+        let dragging = self.page == Page::Settings && ctx.input(|i| i.pointer.any_down());
+        let only_scale = self.applied.is_some_and(|a| (a.0, a.2, a.3) == (want.0, want.2, want.3));
+        if self.applied != Some(want) && !(dragging && only_scale) {
             theme::apply_style(ctx, self.settings.accent, self.settings.theme == ThemeChoice::Night);
             ctx.set_theme(self.settings.theme.preference());
             ctx.set_zoom_factor(self.settings.ui_scale);
@@ -335,7 +339,6 @@ impl App {
             }
             self.adds.push(dialog);
         }
-        self.url.clear();
         self.page = Page::Downloads;
         // The lookups start in the next frame (a few at once).
         ctx.request_repaint();
@@ -346,12 +349,20 @@ impl App {
         for d in downloads {
             self.manager.add_with(&d.url, d.source, d.name, &d.dir, d.thumbnail, d.headers);
         }
-        if n > 0 && matches!(self.filter, Filter::Done | Filter::Failed | Filter::Paused) {
-            self.filter = Filter::All;
+        if n > 0 {
+            // Whatever hid it: the status filter, a kind, a search.
+            if matches!(self.filter, Filter::Done | Filter::Failed | Filter::Paused) {
+                self.filter = Filter::All;
+            }
+            self.kind_filter = None;
+            self.search.clear();
         }
     }
 
-    fn poll_adds(&mut self, ctx: &egui::Context, p: &Palette) {
+    /// The part of the add dialogs that is not drawing: lookups are started
+    /// (a few at once), finished ones start their downloads. Runs from
+    /// `logic()`, so that it goes on while the window is minimized.
+    fn advance_adds(&mut self, ctx: &egui::Context) {
         // A few links are looked at at once (an imported list may have
         // hundreds); the one shown first.
         const AT_ONCE: usize = 4;
@@ -383,6 +394,10 @@ impl App {
                 d.start(ctx, &settings);
             }
         }
+    }
+
+    /// The dialog that is shown (the first one that is not quick).
+    fn poll_adds(&mut self, ctx: &egui::Context, p: &Palette) {
         let ffmpeg = self.helpers.installed(Tool::Ffmpeg);
         let Some(i) = self.adds.iter().position(|d| !d.quick) else { return };
         match self.adds[i].show(ctx, p, &mut self.thumbs, ffmpeg) {
@@ -507,7 +522,11 @@ impl App {
             let host = if new.len() == 1 {
                 swiftdm::util::host(new[0]).to_string()
             } else {
-                i18n::trlf("{n} links", &[("n", &new.len())])
+                if i18n::is_rtl() {
+                    i18n::ar_plural(new.len() as u64, ["رابط واحد", "رابطان", "{n} روابط", "{n} رابطًا"])
+                } else {
+                    i18n::trlf("{n} links", &[("n", &new.len())])
+                }
             };
             let text = new.join("\n");
             self.toast(icon::CLIPBOARD_TEXT, p.accent, tr("Download the copied link?"), &host, ToastTarget::Link(text));
@@ -683,11 +702,12 @@ impl App {
 
     /// Links from a text file (one or more per line).
     fn import_links(&mut self, ctx: &egui::Context) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter(trl("Text files"), &["txt", "csv", "list", "md", "html", "htm"])
-            .add_filter(trl("All files"), &["*"])
-            .pick_file()
-        else {
+        let Some(path) = crate::instance::in_dialog(|| {
+            rfd::FileDialog::new()
+                .add_filter(trl("Text files"), &["txt", "csv", "list", "md", "html", "htm"])
+                .add_filter(trl("All files"), &["*"])
+                .pick_file()
+        }) else {
             return;
         };
         match std::fs::read(&path) {
@@ -820,7 +840,9 @@ impl App {
                         );
                         ui.horizontal(|ui| {
                             if ui.button(icon_label(icon::FOLDER_OPEN, "Change…")).clicked()
-                                && let Some(d) = rfd::FileDialog::new().set_directory(&s.download_dir).pick_folder()
+                                && let Some(d) = crate::instance::in_dialog(|| {
+                                    rfd::FileDialog::new().set_directory(&s.download_dir).pick_folder()
+                                })
                             {
                                 s.download_dir = d;
                             }
@@ -1064,6 +1086,9 @@ impl App {
                     if submit && !self.url.trim().is_empty() {
                         let url = self.url.clone();
                         self.add_links(&ctx, &url);
+                        // What was typed here is added; what someone else
+                        // sent (the browser, a copied link) leaves it alone.
+                        self.url.clear();
                     }
                 });
             });
@@ -1208,7 +1233,8 @@ impl App {
         let spacing = 8.0;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
             ui,
-            list::ROW_HEIGHT + spacing,
+            // The height of a row without the space between rows (egui adds that).
+            list::ROW_OUTER,
             shown.len(),
             |ui, range| {
                 ui.spacing_mut().item_spacing.y = spacing;
@@ -1466,20 +1492,45 @@ impl eframe::App for App {
             self.settings.pause_at,
         );
         self.on_due(ctx, due);
+        // What goes on in the background, shown or not.
+        self.advance_adds(ctx);
+        self.helpers.poll(ctx);
+        if self.updater.poll(ctx) {
+            // The installer takes over and starts the new version.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        self.poll_hashing(ctx, &p);
+        if self.manager.busy() || self.helpers.busy() || self.adds.iter().any(|d| d.looking()) {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        if self.settings.watch_clipboard {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        static DRAWN: std::sync::Once = std::sync::Once::new();
-        DRAWN.call_once(crate::drawn);
+        // The graphics work once several pictures were really shown for a
+        // moment: a crash in the first present (a bad driver) must still leave
+        // the marker that makes the next start use OpenGL.
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static FRAMES: AtomicU32 = AtomicU32::new(0);
+            static SINCE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+            static DRAWN: std::sync::Once = std::sync::Once::new();
+            let frames = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+            let since = *SINCE.get_or_init(Instant::now);
+            if !DRAWN.is_completed() {
+                if frames >= 6 && since.elapsed() > Duration::from_millis(1500) {
+                    DRAWN.call_once(crate::drawn);
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(300));
+                }
+            }
+        }
         self.fit_to_screen(&ctx);
         self.apply_settings(&ctx);
-        self.helpers.poll(&ctx);
         self.thumbs.poll(&ctx);
-        if self.updater.poll(&ctx) {
-            // The installer takes over and starts the new version.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
         let p = Palette::new(ui.visuals().dark_mode, self.settings.theme == ThemeChoice::Night, self.settings.accent);
         // Under everything: the soft background that frosted surfaces lie on.
         theme::paint_backdrop(ui.painter(), ui.max_rect(), &p, self.settings.accent.color());
@@ -1502,7 +1553,6 @@ impl eframe::App for App {
         for c in self.menu.commands(&ctx, self.language) {
             self.run(&ctx, c);
         }
-        self.poll_hashing(&ctx, &p);
         if self.browser_checked.elapsed() > Duration::from_secs(5) {
             self.browser_checked = Instant::now();
             self.browser_seen = crate::browser::last_seen();
@@ -1579,13 +1629,6 @@ impl eframe::App for App {
         let due = self.power.dialog(&ctx, &p, failed);
         self.on_due(&ctx, due);
         self.toasts_ui(&ctx, &p);
-
-        if self.manager.busy() || self.helpers.busy() || self.adds.iter().any(|d| d.looking()) {
-            ctx.request_repaint_after(Duration::from_millis(250));
-        }
-        if self.settings.watch_clipboard {
-            ctx.request_repaint_after(Duration::from_secs(1));
-        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

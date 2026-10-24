@@ -129,7 +129,12 @@ fn agent_config(body_timeout: Option<Duration>, net: &Net) -> ureq::config::Conf
 
 /// `location` (a redirect target) made absolute against `base`.
 pub fn join_url(base: &str, location: &str) -> String {
-    if location.contains("://") {
+    // Absolute: "scheme://" at the very start (a "://" later on, in a query
+    // such as /login?next=https://a.org/f, does not make it one).
+    let scheme_len = location.find("://");
+    if scheme_len.is_some_and(|n| {
+        n > 0 && location[..n].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    }) {
         return location.to_string();
     }
     let (scheme, rest) = base.split_once("://").unwrap_or(("https", base));
@@ -476,6 +481,8 @@ impl Seg {
 
 struct Shared<'a> {
     url: &'a str,
+    /// The size of the file when this download began.
+    size: u64,
     file: File,
     segs: Mutex<Vec<Seg>>,
     /// Set to stop all connections: on request or after a failure.
@@ -507,9 +514,20 @@ impl Shared<'_> {
     }
 
     /// A segment for a free connection: an untaken one, or the second half
-    /// of the largest one still running.
-    fn claim(&self) -> Option<usize> {
+    /// of the largest one still running. With none left, this connection is
+    /// counted as gone, under the same lock that decides about stepping aside
+    /// (so that the last one working cannot step aside meanwhile).
+    fn claim(&self, gone: &mut bool) -> Option<usize> {
         let mut segs = self.segs();
+        let found = Self::pick(&mut segs);
+        if found.is_none() {
+            self.staying.fetch_sub(1, Ordering::Relaxed);
+            *gone = true;
+        }
+        found
+    }
+
+    fn pick(segs: &mut Vec<Seg>) -> Option<usize> {
         if let Some(i) = segs.iter().position(|s| !s.taken && s.remaining() > 0) {
             segs[i].taken = true;
             return Some(i);
@@ -534,20 +552,22 @@ impl Shared<'_> {
         }
     }
 
-    /// `gone` is set when this connection stepped aside (and was counted).
+    /// `gone` is set once this connection is no longer counted as working
+    /// (stepped aside, or nothing left for it).
     fn work(&self, gone: &mut bool) {
         let mut buf = vec![0; CHUNK];
-        while let Some(i) = self.claim() {
+        while let Some(i) = self.claim(gone) {
             let result = self.segment(i, &mut buf);
-            self.segs()[i].taken = false;
             match result {
-                Ok(()) => {}
-                // This connection steps aside; the others take its part.
+                Ok(()) => self.segs()[i].taken = false,
+                // This connection steps aside (its segment was released with
+                // it); the others take over.
                 Err(e) if e.downcast_ref::<StepAside>().is_some() => {
                     *gone = true;
                     return;
                 }
                 Err(e) => {
+                    self.segs()[i].taken = false;
                     let mut f = self.failure.lock().unwrap_or_else(|e| e.into_inner());
                     f.get_or_insert(e);
                     self.halt.store(true, Ordering::Relaxed);
@@ -559,18 +579,19 @@ impl Shared<'_> {
         }
     }
 
-    /// The server limits requests: one connection fewer, never none.
-    /// Returns whether this connection should step aside.
-    fn throttle(&self) -> bool {
+    /// The server limits requests: one connection fewer, never none, and its
+    /// segment goes back to the others in the same moment. Returns whether
+    /// this connection (working on segment `i`) should step aside.
+    fn throttle(&self, i: usize) -> bool {
         self.limited.store(true, Ordering::Relaxed);
-        let mut n = self.staying.load(Ordering::Relaxed);
-        while n > 1 {
-            match self.staying.compare_exchange(n, n - 1, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return true,
-                Err(now) => n = now,
-            }
+        let mut segs = self.segs();
+        if self.staying.load(Ordering::Relaxed) > 1 {
+            self.staying.fetch_sub(1, Ordering::Relaxed);
+            segs[i].taken = false;
+            true
+        } else {
+            false
         }
-        false
     }
 
     /// Downloads segment `i`, reconnecting as needed.
@@ -600,7 +621,7 @@ impl Shared<'_> {
             };
             let fatal = e.downcast_ref::<Fatal>().is_some();
             let limited = e.downcast_ref::<RateLimited>().map(|r| r.retry_after);
-            if limited.is_some() && self.throttle() {
+            if limited.is_some() && self.throttle(i) {
                 log::info!("the server limits requests: one connection fewer ({e:#})");
                 return Err(StepAside.into());
             }
@@ -637,7 +658,7 @@ impl Shared<'_> {
             }
             let _ = tx.send(req.call());
         });
-        let mut resp = loop {
+        let resp = loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(answer) => break answer.map_err(net_error)?,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if self.halted() => return Ok(false),
@@ -659,29 +680,55 @@ impl Shared<'_> {
             }
             s => bail!("{}", status_message(s)),
         }
-        // The part asked for, not another one.
-        let start = resp
+        // The part asked for, not another one, of the file as it was.
+        let range = resp
             .headers()
             .get("content-range")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().strip_prefix("bytes ")?.split('-').next()?.trim().parse::<u64>().ok());
+            .and_then(|v| v.trim().strip_prefix("bytes ").map(str::to_string));
+        let start = range.as_deref().and_then(|v| v.split('-').next()?.trim().parse::<u64>().ok());
         if start != Some(pos) {
             return Err(Fatal("the server sent the wrong part of the file".into()).into());
         }
+        // "bytes 0-99/1234": the total, when the server says it, must be the
+        // size this download began with (else the file changed meanwhile).
+        let total = range.as_deref().and_then(|v| v.rsplit('/').next()?.trim().parse::<u64>().ok());
+        if total.is_some_and(|t| t != self.size) {
+            return Err(Fatal("the server stopped allowing resumed downloads".into()).into());
+        }
         let chunk = self.limiter.chunk().min(buf.len());
-        let buf = &mut buf[..chunk];
-        let mut body = resp.body_mut().as_reader();
+        // The body is read in a helper thread, so that pausing does not wait
+        // for a server that stops sending.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(4);
+        let mut reader = resp.into_body().into_reader();
+        std::thread::spawn(move || {
+            loop {
+                let mut piece = vec![0; chunk];
+                let result = reader.read(&mut piece).map(|n| {
+                    piece.truncate(n);
+                    piece
+                });
+                let end = !matches!(&result, Ok(p) if !p.is_empty());
+                // A closed channel: nobody wants the rest any more.
+                if tx.send(result).is_err() || end {
+                    return;
+                }
+            }
+        });
         let mut progressed = false;
         loop {
             if self.halted() {
                 return Ok(progressed);
             }
-            let n = match body.read(buf) {
-                Ok(0) => return Ok(progressed),
-                Ok(n) => n,
-                Err(_) if progressed => return Ok(true),
-                Err(e) => bail!("the connection was lost ({e})"),
+            let data = match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(d)) if d.is_empty() => return Ok(progressed),
+                Ok(Ok(d)) => d,
+                Ok(Err(_)) if progressed => return Ok(true),
+                Ok(Err(e)) => bail!("the connection was lost ({e})"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(progressed),
             };
+            let n = data.len();
             self.limiter.take(n);
             // The segment may have been split meanwhile: write only up to its end.
             let (offset, len) = {
@@ -689,7 +736,7 @@ impl Shared<'_> {
                 (s.pos, (n as u64).min(s.remaining()) as usize)
             };
             if len > 0 {
-                write_at(&self.file, &buf[..len], offset).context("could not write the file (is the disk full?)")?;
+                write_at(&self.file, &data[..len], offset).map_err(write_failed)?;
                 progressed = true;
             }
             let mut segs = self.segs();
@@ -699,6 +746,13 @@ impl Shared<'_> {
             }
         }
     }
+}
+
+/// A write that failed: a full disk is no use retrying.
+fn write_failed(e: std::io::Error) -> anyhow::Error {
+    let full = matches!(e.kind(), std::io::ErrorKind::StorageFull | std::io::ErrorKind::WriteZero);
+    let error = anyhow!("could not write the file (is the disk full?)");
+    if full { Fatal(format!("{error}")).into() } else { error }
 }
 
 /// The server says "too many requests" (HTTP 429, or 503 asking to wait).
@@ -789,6 +843,7 @@ fn ranged(
     };
     let shared = Shared {
         url,
+        size,
         file,
         segs: Mutex::new(segs),
         halt: AtomicBool::new(false),
@@ -1038,6 +1093,7 @@ mod tests {
         let limiter = Limiter::default();
         let shared = Shared {
             url: "",
+            size: 8 * MIN_SPLIT,
             file: tempfile(),
             segs: Mutex::new(initial_segments(8 * MIN_SPLIT, 1)),
             halt: AtomicBool::new(false),
@@ -1049,9 +1105,10 @@ mod tests {
             staying: AtomicUsize::new(1),
             limited: AtomicBool::new(false),
         };
-        assert_eq!(shared.claim(), Some(0));
+        let mut gone = false;
+        assert_eq!(shared.claim(&mut gone), Some(0));
         // The only segment is taken: the next connection splits it in half.
-        assert_eq!(shared.claim(), Some(1));
+        assert_eq!(shared.claim(&mut gone), Some(1));
         let segs = shared.segs();
         assert_eq!(segs[0].end + 1, segs[1].start);
         assert_eq!(segs[1].end, 8 * MIN_SPLIT - 1);

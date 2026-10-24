@@ -55,7 +55,7 @@ impl Thumbs {
                 *state = match result {
                     Ok(img) => State::Ready(ctx.load_texture(format!("thumb:{url}"), img, TextureOptions::LINEAR)),
                     Err(e) => {
-                        log::info!("thumbnail {url}: {e:#}");
+                        log::info!("thumbnail {}: {e:#}", swiftdm::util::redact_url(url));
                         State::Failed
                     }
                 };

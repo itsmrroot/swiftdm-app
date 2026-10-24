@@ -5,39 +5,44 @@
   window.__swiftdm = true;
 
   const t = (key) => ext.i18n.getMessage(key) || key;
+  // After the extension was reloaded or removed, this page's script has lost
+  // its connection: the words are looked up safely.
+  const say = (key) => {
+    try {
+      return t(key);
+    } catch {
+      return key;
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // The address of a video: on feeds (TikTok, Instagram, X…) the page's
   // address is the feed, and the video itself plays from a private blob:
   // stream — its own link is found next to it in the page.
 
+  // The host is anchored: "dropbox.com/..." must not count as "x.com", nor a
+  // query that merely mentions "tiktok.com/@a/video/1".
+  const onSite = (name) => `^https?:\\/\\/([\\w-]+\\.)*${name}`;
   const SINGLE = [
-    /tiktok\.com\/@[^/?#]*\/(video|photo)\/\d+/,
-    /instagram\.com\/(reels?|p|tv)\/[\w-]+/,
-    /(twitter|x)\.com\/[^/?#]+\/status\/\d+/,
-    /youtube\.com\/(watch\?(.*&)?v=|shorts\/|live\/)[\w-]+/,
-    /youtu\.be\/[\w-]+/,
-    /facebook\.com\/(.*\/videos\/|reel\/|watch\/?\?v=)\d+/,
-    /fb\.watch\/\w+/,
-    /vimeo\.com\/(\d+|.*\/videos?\/\d+)/,
-    /dailymotion\.com\/video\//,
-    /reddit\.com\/r\/[^/]+\/comments\//,
-    /twitch\.tv\/(videos\/\d+|[^/]+\/clip\/)/,
-    /bilibili\.com\/video\//,
-    /threads\.(net|com)\/@[^/]+\/post\//,
+    new RegExp(`${onSite("tiktok\\.com")}\\/@[^/?#]*\\/(video|photo)\\/\\d+`),
+    new RegExp(`${onSite("instagram\\.com")}\\/(reels?|p|tv)\\/[\\w-]+`),
+    new RegExp(`${onSite("(twitter|x)\\.com")}\\/[^/?#]+\\/status\\/\\d+`),
+    new RegExp(`${onSite("youtube\\.com")}\\/(watch\\?(.*&)?v=|shorts\\/|live\\/)[\\w-]+`),
+    new RegExp(`${onSite("youtu\\.be")}\\/[\\w-]+`),
+    new RegExp(`${onSite("facebook\\.com")}\\/(.*\\/videos\\/|reel\\/|watch\\/?\\?v=)\\d+`),
+    new RegExp(`${onSite("fb\\.watch")}\\/\\w+`),
+    new RegExp(`${onSite("vimeo\\.com")}\\/(\\d+|.*\\/videos?\\/\\d+)`),
+    new RegExp(`${onSite("dailymotion\\.com")}\\/video\\/`),
+    new RegExp(`${onSite("reddit\\.com")}\\/r\\/[^/]+\\/comments\\/`),
+    new RegExp(`${onSite("twitch\\.tv")}\\/(videos\\/\\d+|[^/]+\\/clip\\/)`),
+    new RegExp(`${onSite("bilibili\\.com")}\\/video\\/`),
+    new RegExp(`${onSite("threads\\.(net|com)")}\\/@[^/]+\\/post\\/`),
   ];
   const single = (url) => SINGLE.some((re) => re.test(url));
 
-  /** TikTok's id of a video box: "xgwrapper-0-7353…", or an id attribute. */
+  /** TikTok's id of a video box: only "xgwrapper-0-7353…" (the other long numbers in a page are users', sounds', …). */
   function tiktokId(node) {
-    const wrapper = /xgwrapper-\d+-(\d{18,20})/.exec(node.id || "");
-    if (wrapper) return wrapper[1];
-    for (const attr of node.attributes ?? []) {
-      if (attr.name !== "id" && !attr.name.startsWith("data-")) continue;
-      const id = /^(?:\D*-)?(\d{18,20})$/.exec(attr.value);
-      if (id) return id[1];
-    }
-    return null;
+    return /xgwrapper-\d+-(\d{18,20})/.exec(node.id || "")?.[1] ?? null;
   }
 
   /** The link to `video` itself, or the page's address. */
@@ -80,10 +85,16 @@
     return pool.sort((a, b) => visible(b) - visible(a))[0] || null;
   }
 
+  // The element last right-clicked: "download this video" is about that one.
+  let clicked = null;
+  document.addEventListener("contextmenu", (e) => (clicked = e.target), { capture: true, passive: true });
+
   // The popup asks which video this page is showing.
   ext.runtime.onMessage.addListener((msg, _sender, reply) => {
     if (msg?.type !== "current-video") return;
-    const v = currentVideo();
+    // The right-clicked video (when it was one), else the one being watched.
+    const asked = clicked?.closest?.("video") || (msg.context ? clicked?.querySelector?.("video") : null);
+    const v = (msg.context && asked) || currentVideo();
     reply({ url: v ? videoUrl(v) : single(location.href) ? location.href : null, src: v?.currentSrc || null });
   });
   let enabled = true;
@@ -143,6 +154,8 @@
     </div>`;
   (document.body || document.documentElement).appendChild(host);
   const bar = root.querySelector(".bar");
+  const original = bar.innerHTML;
+  let sending = false;
 
   let target = null;
   let hideTimer = 0;
@@ -184,7 +197,16 @@
     // Capture: a player (YouTube's) may stop the event before it bubbles up.
     { passive: true, capture: true },
   );
-  window.addEventListener("scroll", () => target && place(target), { passive: true });
+  // Scrolling inside a page's own scroll container does not bubble: capture.
+  const follow = () => {
+    if (!target) return;
+    const r = target.getBoundingClientRect();
+    // Gone from the page, or scrolled out of view: the bar goes too.
+    if (!target.isConnected || r.bottom < 0 || r.top > window.innerHeight) hide();
+    else place(target);
+  };
+  window.addEventListener("scroll", follow, { passive: true, capture: true });
+  window.addEventListener("resize", follow, { passive: true });
 
   root.addEventListener("click", async (e) => {
     const button = e.target.closest("button");
@@ -202,7 +224,8 @@
       }
       return;
     }
-    if (!target) return;
+    if (!target || sending) return;
+    sending = true;
     const reply = await message({
       type: "video",
       mode: button.dataset.mode,
@@ -210,8 +233,10 @@
       src: target.currentSrc || target.src,
       pageUrl: location.href,
     }).catch(() => ({ ok: false }));
-    const old = bar.innerHTML;
-    bar.innerHTML = `<span class="toast">${reply?.ok ? "✓ " + t("sent") : "⚠ " + t("failed")}</span>`;
-    setTimeout(() => (bar.innerHTML = old), 1800);
+    bar.innerHTML = `<span class="toast">${reply?.ok ? "✓ " + say("sent") : "⚠ " + say("failed")}</span>`;
+    setTimeout(() => {
+      bar.innerHTML = original;
+      sending = false;
+    }, 1800);
   });
 })();

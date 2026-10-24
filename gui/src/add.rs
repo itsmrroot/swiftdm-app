@@ -177,7 +177,7 @@ pub fn parse_time(t: &str) -> Option<u32> {
     if t.is_empty() {
         return None;
     }
-    t.split(':').try_fold(0u32, |acc, part| Some(acc.checked_mul(60)? + part.trim().parse::<u32>().ok()?))
+    t.split(':').try_fold(0u32, |acc, part| acc.checked_mul(60)?.checked_add(part.trim().parse::<u32>().ok()?))
 }
 
 impl AddDialog {
@@ -305,7 +305,8 @@ impl AddDialog {
         }
         let mut action = Action::None;
         let modal = egui::Modal::new(egui::Id::new("add")).show(ctx, |ui| {
-            ui.set_width(560.0);
+            // Not wider than the window (a small window at a large zoom).
+            ui.set_width(560.0_f32.min(ctx.content_rect().width() - 48.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::LINK).size(theme::scale::ICON_LG).color(p.accent));
                 ui.label(theme::semibold(tr("New download"), theme::scale::LEAD));
@@ -507,7 +508,8 @@ impl AddDialog {
                 let shown = self.dir.display().to_string();
                 ui.add(egui::Label::new(RichText::new(shown)).truncate());
                 if ui.button(icon::FOLDER_OPEN).on_hover_text(tr("Choose a folder")).clicked()
-                    && let Some(d) = rfd::FileDialog::new().set_directory(&self.dir).pick_folder()
+                    && let Some(d) =
+                        crate::instance::in_dialog(|| rfd::FileDialog::new().set_directory(&self.dir).pick_folder())
                 {
                     self.dir = d;
                 }
@@ -521,7 +523,7 @@ impl AddDialog {
                 // "Only a part" with times that make no sense: not silently the whole video.
                 let part_ok = self.part.is_none() || self.options().section.is_some();
                 let label = if count > 1 {
-                    format!("  {}  {}  ", icon::DOWNLOAD_SIMPLE, trf("Download {n}", &[("n", &count)]))
+                    format!("  {}  ", i18n::icon_text(icon::DOWNLOAD_SIMPLE, &trf("Download {n}", &[("n", &count)])))
                 } else {
                     format!("  {}  ", icon_label(icon::DOWNLOAD_SIMPLE, "Download"))
                 };

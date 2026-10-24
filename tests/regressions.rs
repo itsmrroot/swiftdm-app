@@ -30,6 +30,8 @@ struct Cfg {
     at_once: usize,
     /// Never answer a ranged request (but accept the connection).
     silent_ranges: bool,
+    /// Ranged requests get headers and 1000 bytes of body, then nothing.
+    stall_body: bool,
     /// The size really sent differs from the one announced to ranged probes:
     /// no ranges, and a body of this length (0: normal).
     dynamic_len: usize,
@@ -110,6 +112,18 @@ fn handle(
             )?;
             return Ok(());
         }
+    }
+    if cfg.stall_body && range.is_some_and(|r| r != (0, 0)) {
+        let (a, b) = range.unwrap();
+        write!(
+            s,
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\nConnection: close\r\n\r\n",
+            b - a + 1,
+            data.len()
+        )?;
+        s.write_all(&data[a..a + 1000])?;
+        std::thread::sleep(Duration::from_secs(3600));
+        return Ok(());
     }
     let result = answer(&mut s, data, cfg, range);
     if counted && cfg.at_once > 0 {
@@ -380,4 +394,48 @@ fn the_size_of_the_answer_counts_not_the_first_look() {
     let out = http::download(job, &AtomicBool::new(false), &Limiter::default(), &Nop);
     assert!(out.is_ok(), "{:?}", out.err().map(|e| format!("{:#}", e.error)));
     assert_eq!(std::fs::read(&path).unwrap().len(), 392);
+}
+
+/// Stopping does not wait for a server that stops in the middle of an answer.
+#[test]
+fn stopping_does_not_wait_for_a_stalled_body() {
+    let server = serve(content(4_000_000, 14), Cfg { stall_body: true, ..Default::default() });
+    let dir = temp_dir("stallbody");
+    let path = dir.join("x.bin");
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = stop.clone();
+    let url = server.url.clone();
+    let h = std::thread::spawn(move || {
+        let job = http::Job { url: &url, path: &path, connections: 4, resume: None, net: Default::default() };
+        let _ = http::download(job, &s2, &Limiter::default(), &Nop);
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    stop.store(true, Ordering::Relaxed);
+    let t = Instant::now();
+    while !h.is_finished() && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(h.is_finished(), "still running 5 s after stop");
+}
+
+/// A redirect whose query holds a link is still a relative redirect.
+#[test]
+fn a_link_in_a_query_does_not_make_a_redirect_absolute() {
+    assert_eq!(
+        http::join_url("https://a.org/x/y", "/login?next=https://b.org/f"),
+        "https://a.org/login?next=https://b.org/f"
+    );
+    assert_eq!(http::join_url("https://a.org/x/y", "https://b.org/f"), "https://b.org/f");
+    assert_eq!(http::join_url("https://a.org/x/y", "z"), "https://a.org/x/z");
+}
+
+/// A saved list that cannot be read is kept, not overwritten by the next save.
+#[test]
+fn an_unreadable_list_is_kept() {
+    let dir = temp_dir("corrupt");
+    let file = dir.join("downloads.json");
+    std::fs::write(&file, b"{ this is not the list").unwrap();
+    let m = Manager::open(Some(file.clone()));
+    assert!(m.items().is_empty());
+    assert_eq!(std::fs::read(dir.join("downloads.json.corrupt")).unwrap(), b"{ this is not the list");
 }

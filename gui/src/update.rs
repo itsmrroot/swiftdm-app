@@ -176,6 +176,8 @@ fn agent() -> ureq::Agent {
         .user_agent(format!("swiftdm-gui/{}", env!("CARGO_PKG_VERSION")))
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
+        // A stalled download must end (and so be cancellable) some day.
+        .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
         .build()
         .into()
 }
@@ -273,7 +275,8 @@ fn after_exit(script: &str) -> Result<()> {
 /// Starts installing the downloaded `file`. On success the app must close
 /// right away: the installation continues without it and starts the new
 /// version.
-pub fn install(file: &Path) -> Result<()> {
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn install(file: &Path, sha256: Option<&str>) -> Result<()> {
     match kind() {
         #[cfg(windows)]
         Kind::Setup => {
@@ -340,6 +343,11 @@ rm -rf {app} && mv {staged} {app} && open {app}"#
             if let Some(dir) = file.parent() {
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
             }
+            // The package is run as root: its checksum is checked once more
+            // in that very moment, by the privileged script (the file sits in
+            // a folder the user can write to).
+            let want = sha256.filter(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()));
+            let Some(want) = want else { bail!("the download cannot be checked") };
             let install = if k == Kind::Deb {
                 "apt-get install -y --allow-downgrades \"$1\""
             } else {
@@ -352,7 +360,7 @@ rm -rf {app} && mv {staged} {app} && open {app}"#
             let exe = std::env::current_exe()?;
             after_exit(&format!(
                 "{sudo}/bin/sh -c {} sh {} >/dev/null 2>&1; {} &",
-                quote(Path::new(install)),
+                quote(Path::new(&format!("echo \"{want}  $1\" | sha256sum -c - >/dev/null 2>&1 || exit 1; {install}"))),
                 quote(file),
                 quote(&exe)
             ))
@@ -428,7 +436,13 @@ impl Updater {
                 Some(result) => {
                     let cancelled = job.stopping();
                     self.download = None;
-                    match result.and_then(|file| install(&file)) {
+                    // The checksum of what was offered, for the privileged install.
+                    let want = self.release.as_ref().and_then(|r| r.asset.as_ref()).and_then(|a| a.sha256.clone());
+                    match result.and_then(|file| {
+                        // Cancelled in the moment the download finished: not installed.
+                        ensure!(!cancelled, "cancelled");
+                        install(&file, want.as_deref())
+                    }) {
                         Ok(()) => return true,
                         Err(_) if cancelled => {}
                         Err(e) => {
@@ -499,7 +513,7 @@ impl Updater {
             return;
         };
         let modal = egui::Modal::new(egui::Id::new("update")).show(ctx, |ui| {
-            ui.set_width(460.0);
+            ui.set_width(460.0_f32.min(ctx.content_rect().width() - 48.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon::ARROW_CIRCLE_UP).size(theme::scale::ICON_XL).color(p.accent));
                 ui.label(theme::semibold(tr("Update available"), theme::scale::LEAD).color(p.text));

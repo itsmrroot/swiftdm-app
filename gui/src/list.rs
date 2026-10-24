@@ -11,6 +11,8 @@ use crate::theme::{self, Palette};
 use crate::thumbs::Thumbs;
 
 pub const ROW_HEIGHT: f32 = 78.0;
+/// What a row takes up in all (its content, the margins and the border).
+pub const ROW_OUTER: f32 = ROW_HEIGHT - 28.0 + 20.0 + 2.0;
 
 pub fn kind_icon(kind: FileKind) -> &'static str {
     match kind {
@@ -68,6 +70,16 @@ pub enum RowAction {
 /// How long ago `secs` was, in logical order.
 pub fn date(secs: i64) -> String {
     let ago = swiftdm::util::now() - secs;
+    // Arabic counts with different words for one, two, a few and many.
+    if i18n::is_rtl() && ago >= 60 {
+        let n = |d: i64| (ago / d) as u64;
+        return match ago {
+            60..=3599 => i18n::ar_plural(n(60), ["قبل دقيقة", "قبل دقيقتين", "قبل {n} دقائق", "قبل {n} دقيقة"]),
+            3600..=86_399 => i18n::ar_plural(n(3600), ["قبل ساعة", "قبل ساعتين", "قبل {n} ساعات", "قبل {n} ساعة"]),
+            86_400..=172_799 => trl("yesterday").into(),
+            _ => i18n::ar_plural(n(86_400), ["قبل يوم", "قبل يومين", "قبل {n} أيام", "قبل {n} يومًا"]),
+        };
+    }
     match ago {
         i64::MIN..=59 => trl("just now").into(),
         60..=3599 => trlf("{n} min ago", &[("n", &(ago / 60))]),

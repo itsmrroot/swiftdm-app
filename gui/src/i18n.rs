@@ -169,6 +169,33 @@ pub fn trf(en: &'static str, args: &[(&str, &dyn Display)]) -> String {
     }
 }
 
+/// `s` without the direction marks that `ltr` puts around its parts.
+pub fn strip_marks(s: &str) -> Cow<'_, str> {
+    if s.chars().any(is_isolate) {
+        Cow::Owned(s.chars().filter(|c| !is_isolate(*c)).collect())
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// Arabic number agreement: `forms` are for 1, 2, 3 to 10 and the rest
+/// (11 and more, with the counted thing in the singular); `{n}` is the number.
+pub fn ar_plural(n: u64, forms: [&str; 4]) -> String {
+    let form = match n {
+        1 => 0,
+        2 => 1,
+        _ if (3..=10).contains(&(n % 100)) => 2,
+        _ => 3,
+    };
+    forms[form].replace("{n}", &ltr(&n.to_string()))
+}
+
+/// A menu entry that opens something further: "…" at the end of the text,
+/// which, reading right to left, is the left end (`label` is in display order).
+pub fn ellipsis(label: &str) -> String {
+    if is_rtl() { format!("…{label}") } else { format!("{label}…") }
+}
+
 /// An icon and a label that is already in display order (`tr`): the icon
 /// first, or, reading right to left, after the text (to its right), with a
 /// space the Arabic font does not make too narrow.
@@ -243,6 +270,7 @@ pub const ENGINE: &[&str] = &[
     "could not reach GitHub",
     "could not download {…}",
     "cannot install {…}",
+    "{…} is not available for this system",
     "{…} is not available",
     "{…} is missing from the archive",
     "the archive is damaged",
@@ -260,6 +288,13 @@ pub const ENGINE: &[&str] = &[
     "the download is incomplete",
     "the download is damaged (checksum mismatch)",
     "could not unpack FFmpeg (is xz installed?)",
+    "a bad installer name",
+    "unexpected AppImage location",
+    // jobs.rs, browser.rs
+    "an internal error occurred (please report it)",
+    "{…} was not found",
+    "bad manifest",
+    "could not start SwiftDM",
 ];
 
 /// The values `{…}` stands for when `msg` matches `pattern`.
@@ -295,12 +330,26 @@ pub fn engine(msg: &str) -> String {
             // The engine capitalizes some messages and not others.
             let lowered: String =
                 m.chars().next().map(|c| c.to_lowercase().chain(m.chars().skip(1)).collect()).unwrap_or_default();
-            let Some(values) = match_pattern(pattern, m).or_else(|| match_pattern(pattern, &lowered)) else {
+            let Some(mut values) = match_pattern(pattern, m).or_else(|| match_pattern(pattern, &lowered)) else {
                 continue;
             };
+            // "cannot write /x/y.part: Permission denied (os error 13)": a
+            // value at the end is the name; what follows ": " is the cause,
+            // which is not part of the message to translate.
+            let mut cause = None;
+            if pattern.ends_with("{…}")
+                && let Some(last) = values.last_mut()
+                && let Some((name, rest)) = last.split_once(": ")
+            {
+                cause = Some(rest.to_string());
+                *last = name.to_string();
+            }
             let mut out = lookup(pattern).to_string();
             for v in values {
-                out = out.replacen("{…}", &v, 1);
+                out = out.replacen("{…}", &ltr(&v), 1);
+            }
+            if let Some(c) = cause {
+                out = format!("{out}: {}", ltr(&c));
             }
             return Some(out);
         }
@@ -617,6 +666,8 @@ mod tests {
             include_str!("../../src/http.rs"),
             include_str!("../../src/tools.rs"),
             include_str!("update.rs"),
+            include_str!("jobs.rs"),
+            include_str!("browser.rs"),
         ]
         .concat();
         for pattern in ENGINE {
@@ -651,5 +702,16 @@ mod tests {
             assert!(in_arabic_font(c), "{c:?}");
         }
         assert!(!in_arabic_font('a'));
+    }
+
+    #[test]
+    fn arabic_plurals() {
+        let h = ["قبل ساعة", "قبل ساعتين", "قبل {n} ساعات", "قبل {n} ساعة"];
+        let forms: Vec<String> = [1, 2, 3, 10, 11, 25, 100, 103].iter().map(|n| ar_plural(*n, h)).collect();
+        assert_eq!(forms[0], "قبل ساعة");
+        assert_eq!(forms[1], "قبل ساعتين");
+        assert!(forms[2].contains("ساعات") && forms[3].contains("ساعات"));
+        assert!(forms[4].ends_with("ساعة") && forms[5].ends_with("ساعة") && forms[6].ends_with("ساعة"));
+        assert!(forms[7].contains("ساعات"), "103 takes the plural like 3");
     }
 }

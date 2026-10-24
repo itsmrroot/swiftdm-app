@@ -237,9 +237,20 @@ impl Manager {
     pub fn open(store: Option<PathBuf>) -> Manager {
         let mut items: Vec<Item> = store
             .as_deref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice::<Saved>(&b).ok())
-            .map(|s| s.items)
+            .and_then(|p| {
+                let bytes = std::fs::read(p).ok()?;
+                match serde_json::from_slice::<Saved>(&bytes) {
+                    Ok(saved) => Some(saved.items),
+                    Err(e) => {
+                        // Not read (a newer version's list, a cut-off write):
+                        // kept beside it, so that the next save does not
+                        // destroy the only copy.
+                        log::warn!("the download list could not be read ({e}); kept as .corrupt");
+                        let _ = std::fs::copy(p, p.with_extension("json.corrupt"));
+                        None
+                    }
+                }
+            })
             .unwrap_or_default();
         for item in &mut items {
             if item.status == Status::Active {
@@ -561,6 +572,7 @@ impl Manager {
                 item.status = Status::Active;
                 item.error = None;
                 item.stage = None;
+                item.note = None;
             }
             s.dirty = true;
             let m = self.clone();
@@ -607,7 +619,7 @@ impl Manager {
 
     fn fail(&self, id: u64, message: String) {
         // In the log, so that a failure can be looked into afterwards.
-        let what = self.item(id).map(|i| i.url).unwrap_or_default();
+        let what = self.item(id).map(|i| crate::util::redact_url(&i.url)).unwrap_or_default();
         log::warn!("download {id} failed: {message} ({what})");
         self.inner.update(id, |i| {
             // Paused or started again meanwhile: the user's choice stands.
@@ -619,6 +631,7 @@ impl Manager {
             i.speed = 0.0;
             i.eta = None;
             i.stage = None;
+            i.note = None;
         });
         self.inner.lock().dirty = true;
     }
@@ -842,16 +855,24 @@ struct Progress {
     inner: Arc<Inner>,
     id: u64,
     rate: Mutex<(Instant, u64, f64)>,
+    /// Whether the first progress was seen (see `speed`).
+    started: AtomicBool,
 }
 
 impl Progress {
     fn new(inner: Arc<Inner>, id: u64) -> Self {
-        Progress { inner, id, rate: Mutex::new((Instant::now(), 0, 0.0)) }
+        Progress { inner, id, rate: Mutex::new((Instant::now(), 0, 0.0)), started: AtomicBool::new(false) }
     }
 
     /// Speed from the bytes done, smoothed.
     fn speed(&self, done: u64) -> f64 {
         let mut r = self.rate.lock().unwrap_or_else(|e| e.into_inner());
+        // The first bytes seen are where a resumed download begins, not
+        // speed: they are the baseline.
+        if !self.started.swap(true, Ordering::Relaxed) {
+            *r = (Instant::now(), done, 0.0);
+            return 0.0;
+        }
         let elapsed = r.0.elapsed().as_secs_f64();
         if elapsed >= 0.5 {
             let inst = done.saturating_sub(r.1) as f64 / elapsed;

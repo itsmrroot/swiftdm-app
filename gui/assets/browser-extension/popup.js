@@ -16,7 +16,7 @@ const size = (b) => {
 
 async function send(msg, button) {
   if (button) button.disabled = true;
-  const reply = await ext.runtime.sendMessage({ type: "send", ...msg });
+  const reply = await ext.runtime.sendMessage({ type: "send", ...msg }).catch(() => null);
   if (button) {
     button.textContent = reply?.ok ? "✓ " + t("sent") : "⚠ " + t("failed");
     if (!reply?.ok) $("setup").hidden = false;

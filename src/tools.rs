@@ -176,7 +176,20 @@ pub fn installable(tool: Tool) -> bool {
 
 /// Whether this Linux uses musl (Alpine and others), whose programs differ.
 fn musl_system() -> bool {
+    // A glibc system may have musl beside it (musl-tools, for developers):
+    // it is musl only when there is no glibc.
+    let glibc = [
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        "/lib/aarch64-linux-gnu/libc.so.6",
+        "/usr/lib/libc.so.6",
+    ]
+    .iter()
+    .any(|p| Path::new(p).exists());
     cfg!(target_os = "linux")
+        && !glibc
         && std::fs::read_dir("/lib")
             .map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
             .unwrap_or(false)
@@ -236,6 +249,9 @@ fn agent() -> ureq::Agent {
         .user_agent(format!("SwiftDM/{}", env!("CARGO_PKG_VERSION")))
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
+        // Programs that are run afterwards are never fetched over plain http
+        // (not even through a redirect).
+        .https_only(true)
         // A stalled download ends some day (cancelling is checked between reads).
         .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
         .build()

@@ -92,6 +92,7 @@ fn main() -> eframe::Result {
         let _ = std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700));
     }
     logfile::start();
+    let started = std::time::Instant::now();
     // Links given when starting ("Open with", scripts, browser add-ons).
     let links: Vec<String> = std::env::args().skip(1).filter(|a| swiftdm::util::is_link(a)).collect();
     let inbox = match instance::start(&links) {
@@ -162,8 +163,12 @@ fn main() -> eframe::Result {
         let _ = std::fs::remove_file(swiftdm::paths::data_dir().join("instance-port"));
         if renderer == eframe::Renderer::Wgpu {
             // Try again with OpenGL, in a new process (a process can open its
-            // window system only once).
-            let _ = std::fs::write(renderer_file(), "glow");
+            // window system only once). Remembered only when it failed at the
+            // start: a window system that goes away later (a restarted
+            // compositor) says nothing about the graphics.
+            if started.elapsed() < std::time::Duration::from_secs(20) {
+                let _ = std::fs::write(renderer_file(), "glow");
+            }
             if let Ok(exe) = std::env::current_exe()
                 && std::process::Command::new(exe)
                     .args(std::env::args().skip(1))

@@ -32,6 +32,16 @@ impl ThemeChoice {
         }
     }
 
+    /// The name in logical order, for menus the system draws.
+    pub fn name_logical(self) -> &'static str {
+        match self {
+            ThemeChoice::System => i18n::trl("Automatic"),
+            ThemeChoice::Light => i18n::trl("Light"),
+            ThemeChoice::Dark => i18n::trl("Dark"),
+            ThemeChoice::Night => i18n::trl("Night"),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ThemeChoice::System => i18n::tr("Automatic"),
@@ -645,7 +655,7 @@ pub fn notice(ui: &mut Ui, p: &Palette, color: Color32, icon: &str, text: &str) 
 /// order. The lines line up with the rest of the (left-to-right) layout.
 pub fn paragraph(ui: &mut Ui, text: &str, size: f32, color: Color32) {
     if !i18n::needs_reordering(text) {
-        ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).wrap());
+        ui.add(egui::Label::new(RichText::new(i18n::strip_marks(text)).size(size).color(color)).wrap());
         return;
     }
     let family = if i18n::is_rtl() { FontFamily::Proportional } else { FontFamily::Name(text::RTL.into()) };

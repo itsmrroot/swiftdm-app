@@ -41,10 +41,12 @@ async function cookieHeader(url) {
  * Sends one link. `mode`: "auto" (SwiftDM decides), "video", "audio" or
  * "file". `ask`: show SwiftDM's choices first (quality, folder).
  */
-async function sendLink({ url, mode = "auto", referer = "", filename = "", ask = true }) {
+async function sendLink({ url, mode = "auto", referer = "", filename = "", ask = true, incognito = false }) {
   const item = { url, mode, referer, filename, userAgent: navigator.userAgent };
-  // The site's login travels with plain files (videos use SwiftDM's own).
-  if (mode === "file" || mode === "auto") item.cookies = await cookieHeader(url);
+  // The site's login travels with plain files (videos use SwiftDM's own) -
+  // but not from a private window: the cookies would be those of the normal
+  // profile, which that window is meant to keep apart.
+  if ((mode === "file" || mode === "auto") && !incognito) item.cookies = await cookieHeader(url);
   const reply = await native({ type: "download", items: [item], ask });
   await badge(reply.ok);
   return reply;
@@ -63,7 +65,7 @@ async function badge(ok) {
 function unwrap(url) {
   try {
     const u = new URL(url);
-    if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname)) {
+    if (/^(www\.)?google\.(com|[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})$/i.test(u.hostname)) {
       const inner = u.pathname === "/imgres" ? u.searchParams.get("imgurl") : u.pathname === "/url" ? u.searchParams.get("url") || u.searchParams.get("q") : null;
       if (/^https?:\/\//i.test(inner || "")) return inner;
     }
@@ -110,21 +112,25 @@ ext.contextMenus.onClicked.addListener(async (info, tab) => {
     case "menuLink": {
       const url = unwrap(info.linkUrl);
       // An image behind the link (a search result) is saved as a file.
-      return sendLink({ url, mode: url !== info.linkUrl && IMAGE_EXT.test(url) ? "file" : "auto", referer: page });
+      const mode = url !== info.linkUrl && IMAGE_EXT.test(url) ? "file" : "auto";
+      return sendLink({ url, mode, referer: page, incognito: !!tab?.incognito });
     }
     case "menuImage": {
       // A picture shown from the page itself (data:) has no address; in
       // search results the full picture is the link around it.
       const wrapped = info.linkUrl ? unwrap(info.linkUrl) : "";
-      const url = usable(info.srcUrl) && !(wrapped !== info.linkUrl && usable(wrapped)) ? info.srcUrl : wrapped;
+      // The link counts when it leads to the picture (unwrapped, or itself
+      // a picture file): never the page around an inline thumbnail.
+      const picture = info.linkUrl && usable(wrapped) && (wrapped !== info.linkUrl || IMAGE_EXT.test(wrapped));
+      const url = usable(info.srcUrl) && !(picture && wrapped !== info.linkUrl) ? info.srcUrl : picture ? wrapped : "";
       if (!usable(url)) return badge(false);
-      return sendLink({ url, mode: "file", referer: page });
+      return sendLink({ url, mode: "file", referer: page, incognito: !!tab?.incognito });
     }
     case "menuMedia": {
       if (usable(info.srcUrl)) return sendLink({ url: info.srcUrl, mode: "video", referer: page });
       // A stream in the page (blob:): the post of the video being watched
       // (on a feed), else the page; SwiftDM finds the video there.
-      const current = tab?.id >= 0 ? await ext.tabs.sendMessage(tab.id, { type: "current-video" }).catch(() => null) : null;
+      const current = tab?.id >= 0 ? await ext.tabs.sendMessage(tab.id, { type: "current-video", context: true }).catch(() => null) : null;
       return sendLink({ url: usable(current?.url) ? current.url : page, mode: "video", referer: page });
     }
     case "menuPage":
@@ -165,7 +171,7 @@ ext.downloads.onCreated.addListener(async (item) => {
   }
   const filename = (item.filename || "").split(/[\\/]/).pop();
   // SwiftDM comes to the front with its choices (name, folder) at once.
-  const reply = await sendLink({ url, mode: "file", referer: item.referrer || "", filename, ask: true });
+  const reply = await sendLink({ url, mode: "file", referer: item.referrer || "", filename, ask: true, incognito: !!item.incognito });
   if (reply.ok) {
     await ext.downloads.cancel(item.id).catch(() => {});
     await ext.downloads.erase({ id: item.id }).catch(() => {});
@@ -222,7 +228,9 @@ ext.webRequest.onResponseStarted.addListener(
 
 // A new page starts a new list.
 ext.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.url) {
+  // A new page, not the address changing inside a player's page (YouTube,
+  // TikTok), where what was found stays true.
+  if (change.url && change.status === "loading") {
     ext.storage.session.remove(`tab:${tabId}`);
     ext.action.setBadgeText({ tabId, text: "" });
   }
@@ -255,6 +263,8 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
       case "settings":
         return settings();
     }
-  })().then(reply);
+  })()
+    .then(reply)
+    .catch((e) => reply({ ok: false, error: String(e?.message ?? e) }));
   return true; // answers asynchronously
 });

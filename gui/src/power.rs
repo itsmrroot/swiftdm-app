@@ -34,6 +34,16 @@ impl AfterDone {
         }
     }
 
+    /// The name in logical order, for menus the system draws.
+    pub fn name_logical(self) -> &'static str {
+        match self {
+            AfterDone::Nothing => crate::i18n::trl("Do nothing"),
+            AfterDone::Sleep => crate::i18n::trl("Sleep"),
+            AfterDone::ShutDown => crate::i18n::trl("Shut down"),
+            AfterDone::Quit => crate::i18n::trl("Quit SwiftDM"),
+        }
+    }
+
     pub fn icon(self) -> &'static str {
         match self {
             AfterDone::Nothing => icon::CHECK_SQUARE,
@@ -145,7 +155,13 @@ pub fn notify(title: &str, body: &str) {
         let _ = Command::new("osascript").args(["-e", &script]).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
     } else if cfg!(target_os = "linux") {
         let _ = Command::new("notify-send")
-            .args(["--app-name=SwiftDM", "--icon=swiftdm-gui", title, body])
+            .args([
+                "--app-name=SwiftDM",
+                "--icon=swiftdm-gui",
+                "--",
+                title,
+                &body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();

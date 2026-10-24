@@ -18,6 +18,18 @@ jobs:
   draft:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      # A tag that is not the version in the code would publish an app that
+      # offers its own update again and again.
+      - name: The tag is the version of the app
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          for f in Cargo.toml gui/Cargo.toml; do
+            have=$(grep -m1 '^version = ' "$f" | cut -d'"' -f2)
+            [ "$have" = "$want" ] || { echo "::error::$f is version $have, but the tag is $GITHUB_REF_NAME"; exit 1; }
+          done
       - name: Draft releases
         env:
           PRIVATE_TOKEN: ${{ github.token }}
@@ -37,6 +49,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The build runs other people's code (crates): no token in the checkout.
+          persist-credentials: false
       # The browser extension, for loading "unpacked" and for the stores.
       # Firefox gets background scripts and its own id (see gui/src/browser.rs).
       - name: Package the browser extension
@@ -88,6 +103,9 @@ jobs:
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, packages: "-p swiftdm -p swiftdm-gui", bins: "swiftdm-gui", suffix: "-desktop", installer: linux, label: linux-arm64 }
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The build runs other people's code (crates): no token in the checkout.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

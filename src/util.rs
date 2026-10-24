@@ -168,8 +168,23 @@ pub fn host(url: &str) -> &str {
     let rest = url.split("://").nth(1).unwrap_or(url);
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let host = host.rsplit('@').next().unwrap_or(host);
-    let host = host.split(':').next().unwrap_or(host);
+    // An IPv6 address is in brackets: its colons are not a port's.
+    let host = match host.strip_prefix('[').and_then(|h| h.find(']').map(|i| &host[..i + 2])) {
+        Some(bracketed) => bracketed,
+        None => host.split(':').next().unwrap_or(host),
+    };
     host.strip_prefix("www.").unwrap_or(host)
+}
+
+/// `url` as it may be written to a log: scheme, host and path, without the
+/// user name and password, the query or the fragment (they may hold secrets).
+pub fn redact_url(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
+    let rest = &rest[..end];
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    if scheme.is_empty() { format!("{host}{path}") } else { format!("{scheme}://{host}{path}") }
 }
 
 /// Percent-decoding for file names taken from links.
@@ -337,5 +352,20 @@ mod tests {
         let reserved = dir.join("b.txt");
         assert_eq!(unique_path_except(&dir, "b.txt", &[&reserved]), dir.join("b (2).txt"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hosts_of_addresses() {
+        assert_eq!(host("https://www.example.com:8080/a"), "example.com");
+        assert_eq!(host("http://[::1]:8080/f"), "[::1]");
+        assert_ne!(host("http://[::1]:8080/f"), host("http://[2001:db8::1]/f"));
+        assert_eq!(host("http://user@host.org/x"), "host.org");
+    }
+
+    #[test]
+    fn urls_in_the_log_have_no_secrets() {
+        assert_eq!(redact_url("https://user:pw@host.org/f/a.zip?token=SECRET#x"), "https://host.org/f/a.zip");
+        assert_eq!(redact_url("http://host.org"), "http://host.org");
+        assert_eq!(redact_url("https://h.org/a?b"), "https://h.org/a");
     }
 }

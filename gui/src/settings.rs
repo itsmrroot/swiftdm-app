@@ -389,7 +389,9 @@ fn downloads(ui: &mut Ui, p: &Palette, s: &mut Settings) {
             ui.label(RichText::new(s.download_dir.display().to_string()).color(p.weak));
             ui.horizontal(|ui| {
                 if ui.button(icon_label(icon::FOLDER_OPEN, "Change…")).clicked()
-                    && let Some(d) = rfd::FileDialog::new().set_directory(&s.download_dir).pick_folder()
+                    && let Some(d) = crate::instance::in_dialog(|| {
+                        rfd::FileDialog::new().set_directory(&s.download_dir).pick_folder()
+                    })
                 {
                     s.download_dir = d;
                 }
@@ -554,7 +556,7 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
                     let _ = swiftdm::util::open_path(&dir);
                     (true, dir.display().to_string())
                 }
-                Err(e) => (false, format!("{e:#}")),
+                Err(e) => (false, crate::i18n::engine(&format!("{e:#}"))),
             });
         }
         // To paste into the browser's folder picker.
@@ -562,9 +564,9 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
             page.message = Some(match crate::browser::write_extension(b.is_firefox()) {
                 Ok(dir) => {
                     ui.ctx().copy_text(dir.display().to_string());
-                    (true, format!("{} {}", trl("Copied:"), dir.display()))
+                    (true, crate::i18n::trlf("Copied: {path}", &[("path", &dir.display())]))
                 }
-                Err(e) => (false, format!("{e:#}")),
+                Err(e) => (false, crate::i18n::engine(&format!("{e:#}"))),
             });
         }
         let page_label = if b.is_firefox() {
@@ -580,7 +582,7 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
     });
     if let Some((ok, msg)) = &page.message {
         ui.add_space(4.0);
-        ui.label(RichText::new(msg).color(if *ok { p.weak } else { p.danger }).size(theme::scale::CAPTION));
+        ui.label(crate::text::rich(msg).color(if *ok { p.weak } else { p.danger }).size(theme::scale::CAPTION));
     }
 }
 

@@ -14,7 +14,9 @@ pub fn rich(text: &str) -> RichText {
     if needs_reordering(text) {
         RichText::new(visual(text)).family(FontFamily::Name(RTL.into()))
     } else {
-        RichText::new(text)
+        // Direction marks around numbers and names (see `i18n::ltr`) are no
+        // glyphs of any font: removed also when there is no Arabic to order.
+        RichText::new(crate::i18n::strip_marks(text))
     }
 }
 

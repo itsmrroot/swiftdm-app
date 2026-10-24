@@ -22,10 +22,10 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use sha2::{Digest, Sha256};
@@ -53,6 +53,28 @@ impl Incoming {
         Incoming { url: url.to_string(), mode: "auto".into(), ..Default::default() }
     }
 }
+
+/// File dialogs and the like stop the app's loop while they are open (they
+/// wait for the person): that is not being frozen.
+static DIALOGS: AtomicUsize = AtomicUsize::new(0);
+
+/// Runs `f`, a dialog that waits for the person, without the app counting as
+/// frozen meanwhile.
+pub fn in_dialog<R>(f: impl FnOnce() -> R) -> R {
+    struct Open;
+    impl Drop for Open {
+        fn drop(&mut self) {
+            DIALOGS.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    DIALOGS.fetch_add(1, Ordering::Relaxed);
+    let _open = Open;
+    f()
+}
+
+/// Hand-overs being answered now: more than this at once are not served (a
+/// program that opens connections without end must not use up the threads).
+const MAX_HANDLERS: usize = 16;
 
 /// The app's loop has not run for this long while in front: frozen.
 const FROZEN_AFTER: i64 = 15;
@@ -120,7 +142,15 @@ impl Inbox {
 impl Drop for Inbox {
     /// The app ends: nothing may answer on its port any more.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.file);
+        // Only if it is still ours: a start that raced with this one may have
+        // written its own over it.
+        let ours = std::fs::read_to_string(&self.file)
+            .ok()
+            .and_then(|t| t.split_whitespace().nth(1).map(|p| p == std::process::id().to_string()))
+            .unwrap_or(false);
+        if ours {
+            let _ = std::fs::remove_file(&self.file);
+        }
     }
 }
 
@@ -144,12 +174,17 @@ enum Handed {
 /// Hands `requests` to the running app (none: just show its window).
 /// Returns whether one was running and took them.
 pub fn send(requests: &[Incoming]) -> bool {
-    hand_over_at(&port_file(), requests) != Handed::NoOne
+    // A frozen app counts as not taking them: the browser then keeps its own
+    // download instead of dropping it for an app that does not respond.
+    hand_over_at(&port_file(), requests) == Handed::Yes
 }
 
 /// Hands `links` to a running SwiftDM, or becomes the one others hand to.
 pub fn start(links: &[String]) -> Start {
     let requests: Vec<Incoming> = links.iter().map(|l| Incoming::link(l)).collect();
+    // Several starts at the same moment (a browser sending links while the
+    // app is not running) take turns, so that only one becomes the app.
+    let _turn = start_lock();
     match hand_over_at(&port_file(), &requests) {
         Handed::Yes => return Start::Handed,
         Handed::NoOne => {}
@@ -172,6 +207,24 @@ pub fn start(links: &[String]) -> Start {
     serve(&port_file())
 }
 
+/// A lock on a file beside the port file, held while a start checks for a
+/// running app and becomes it (at most a few seconds of waiting).
+fn start_lock() -> Option<std::fs::File> {
+    let path = port_file().with_file_name("instance.lock");
+    let _ = path.parent().map(std::fs::create_dir_all);
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path).ok()?;
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Listens for hand-overs, announced in `file`.
 fn serve(file: &Path) -> Start {
     let (tx, rx) = channel();
@@ -186,10 +239,19 @@ fn serve(file: &Path) -> Start {
     }
     let _ = write_private(file, &format!("{} {} {secret}", addr.port(), std::process::id()));
     std::thread::spawn(move || {
+        let handlers = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming().flatten() {
-            let (tx, ctx, life, secret) = (tx.clone(), ctx.clone(), life.clone(), secret.clone());
+            if handlers.fetch_add(1, Ordering::Relaxed) >= MAX_HANDLERS {
+                handlers.fetch_sub(1, Ordering::Relaxed);
+                continue; // dropped: closed
+            }
+            let (tx, ctx, life, secret, handlers) =
+                (tx.clone(), ctx.clone(), life.clone(), secret.clone(), handlers.clone());
             // One at a time would let a slow sender hold up all others.
-            std::thread::spawn(move || answer(stream, &secret, &tx, &ctx, &life));
+            std::thread::spawn(move || {
+                let _ = answer(stream, &secret, &tx, &ctx, &life);
+                handlers.fetch_sub(1, Ordering::Relaxed);
+            });
         }
     });
     Start::First(inbox)
@@ -216,36 +278,59 @@ fn answer(
     ctx: &OnceLock<egui::Context>,
     life: &Life,
 ) -> Option<()> {
+    // The greeting (one short line) proves the sender within a moment; only
+    // then the rest is read, so that a stranger cannot hold a thread.
+    let started = Instant::now();
+    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < 512 && started.elapsed() < Duration::from_secs(2) {
+        match (&stream).read(&mut byte) {
+            Ok(1) if byte[0] == b'\n' => break,
+            Ok(1) => line.push(byte[0]),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+            _ => return None,
+        }
+    }
+    let nonce = hello_nonce(&String::from_utf8_lossy(&line), secret)?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let mut text = String::new();
     (&stream).take(MAX_MESSAGE).read_to_string(&mut text).ok()?;
-    let (nonce, requests) = parse(&text, secret)?;
+    let requests = requests_of(&text);
     tx.send(requests).ok()?;
     if let Some(ctx) = ctx.get() {
         ctx.request_repaint();
     }
     let idle = swiftdm::util::now() - life.beat.load(Ordering::Relaxed);
-    let front = u8::from(life.in_front.load(Ordering::Relaxed));
+    // Waiting in a dialog is not frozen.
+    let front = u8::from(life.in_front.load(Ordering::Relaxed) && DIALOGS.load(Ordering::Relaxed) == 0);
     stream.write_all(format!("OK {} {idle} {front}\n", proof(secret, &nonce, "ok")).as_bytes()).ok()
 }
 
-/// The nonce and requests of a hand-over from a sender that knows `secret`.
-fn parse(text: &str, secret: &str) -> Option<(String, Vec<Incoming>)> {
-    let mut lines = text.lines();
-    let mut hello = lines.next()?.split_whitespace();
+/// The nonce of a greeting from a sender that knows `secret`.
+fn hello_nonce(line: &str, secret: &str) -> Option<String> {
+    let mut hello = line.split_whitespace();
     let (Some("SWIFTDM"), Some("3"), Some(nonce), Some(p)) = (hello.next(), hello.next(), hello.next(), hello.next())
     else {
         return None;
     };
-    if p != proof(secret, nonce, "ask") {
-        return None;
-    }
-    let requests = lines
+    (p == proof(secret, nonce, "ask")).then(|| nonce.to_string())
+}
+
+/// The requests in the lines after the greeting.
+fn requests_of(text: &str) -> Vec<Incoming> {
+    text.lines()
         .filter_map(|l| serde_json::from_str::<Incoming>(l.trim()).ok())
         .filter(|r| swiftdm::util::is_link(&r.url))
         .take(1000)
-        .collect();
-    Some((nonce.to_string(), requests))
+        .collect()
+}
+
+/// The nonce and requests of a whole hand-over from a sender that knows `secret`.
+#[cfg(test)]
+fn parse(text: &str, secret: &str) -> Option<(String, Vec<Incoming>)> {
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    Some((hello_nonce(first, secret)?, requests_of(rest)))
 }
 
 /// Ends a frozen SwiftDM — only if `pid` really is one. False: it could
@@ -335,6 +420,9 @@ fn hand_over_at(file: &Path, requests: &[Incoming]) -> Handed {
 mod tests {
     use super::*;
 
+    /// The dialog count is global: the tests that look at it take turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("swiftdm-port-{name}-{}", std::process::id()))
     }
@@ -353,6 +441,7 @@ mod tests {
 
     #[test]
     fn a_frozen_app_in_front_is_noticed_but_not_a_minimized_one() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let file = temp("frozen");
         let Start::First(inbox) = serve(&file) else { panic!() };
         inbox.life.beat.store(swiftdm::util::now() - 60, Ordering::Relaxed);
@@ -404,5 +493,48 @@ mod tests {
         );
         let (nonce, r) = parse(&good, &secret).unwrap();
         assert_eq!((nonce.as_str(), r.len(), r[0].mode.as_str()), ("n", 1, "audio"));
+    }
+
+    #[test]
+    fn strangers_that_say_nothing_do_not_hold_up_the_real_sender() {
+        let file = temp("silent");
+        let Start::First(inbox) = serve(&file) else { panic!() };
+        let port: u16 = std::fs::read_to_string(&file).unwrap().split_whitespace().next().unwrap().parse().unwrap();
+        // Many connections that never say a word (more than are served).
+        let silent: Vec<TcpStream> =
+            (0..40).filter_map(|_| TcpStream::connect((Ipv4Addr::LOCALHOST, port)).ok()).collect();
+        assert!(silent.len() > MAX_HANDLERS);
+        let t = Instant::now();
+        // The silent ones are let go within a couple of seconds; the real
+        // sender is answered as soon as a place is free.
+        let mut answered = Handed::NoOne;
+        while t.elapsed() < Duration::from_secs(8) && answered == Handed::NoOne {
+            answered = hand_over_at(&file, &[Incoming::link("https://example.com/a.zip")]);
+        }
+        assert_eq!(answered, Handed::Yes, "the real sender was never answered");
+        assert_eq!(inbox.poll(true).map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn a_port_file_that_is_no_longer_ours_stays() {
+        let file = temp("not-ours");
+        let Start::First(inbox) = serve(&file) else { panic!() };
+        // Another start wrote its own over it.
+        std::fs::write(&file, "1234 99999999 secret").unwrap();
+        drop(inbox);
+        assert!(file.exists());
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn dialogs_are_not_frozen() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let file = temp("dialog");
+        let Start::First(inbox) = serve(&file) else { panic!() };
+        inbox.life.beat.store(swiftdm::util::now() - 60, Ordering::Relaxed);
+        inbox.life.in_front.store(true, Ordering::Relaxed);
+        let answer = in_dialog(|| hand_over_at(&file, &[]));
+        assert_eq!(answer, Handed::Yes, "an app waiting in a dialog is not frozen");
+        assert!(matches!(hand_over_at(&file, &[]), Handed::Frozen(_)));
     }
 }
