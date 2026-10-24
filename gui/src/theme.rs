@@ -32,7 +32,8 @@ impl ThemeChoice {
         }
     }
 
-    /// The name in logical order, for menus the system draws.
+    /// The name in logical order, for menus the system draws (macOS).
+    #[cfg(target_os = "macos")]
     pub fn name_logical(self) -> &'static str {
         match self {
             ThemeChoice::System => i18n::trl("Automatic"),

@@ -34,7 +34,8 @@ impl AfterDone {
         }
     }
 
-    /// The name in logical order, for menus the system draws.
+    /// The name in logical order, for menus the system draws (macOS).
+    #[cfg(target_os = "macos")]
     pub fn name_logical(self) -> &'static str {
         match self {
             AfterDone::Nothing => crate::i18n::trl("Do nothing"),
