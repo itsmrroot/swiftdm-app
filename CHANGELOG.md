@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.8.1
+
+- **Kiwi in the dark theme now looks like Network Manager:** near-black surfaces, an olive top bar and lime green accents, flat without the colored glow.
+
 ## 1.8.0
 
 - **New color: Kiwi.** A fresh lime green (a deeper green in the light theme), beside Indigo, Blue, Violet, Emerald, Orange and Rose.

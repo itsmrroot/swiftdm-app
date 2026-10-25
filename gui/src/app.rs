@@ -1844,7 +1844,7 @@ impl eframe::App for App {
             .exact_size(54.0)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(p.bar()).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin {
+            .frame(Frame::new().fill(p.header_bar()).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin {
                 left: 16,
                 right: 14,
                 top: 0,

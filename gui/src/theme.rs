@@ -124,6 +124,8 @@ pub struct Palette {
     pub glass: bool,
     pub bg: Color32,
     pub sidebar: Color32,
+    /// The top bar: the sidebar's color, but olive in Kiwi's dark theme.
+    pub header: Color32,
     pub card: Color32,
     pub card_alt: Color32,
     pub border: Color32,
@@ -161,6 +163,23 @@ impl Palette {
         p.on_danger = on_danger;
         // Against the least contrasting surface (cards, the page, raised parts).
         p.accent_text = readable_on(p.accent, p.card_alt, dark);
+        p.header = p.sidebar;
+        if dark && accent == Accent::Kiwi {
+            // Network Manager's Kiwi: neutral near-black surfaces (not the
+            // blue-violet of the other dark themes) and an olive top bar.
+            let c = |r, g, b| Color32::from_rgb(r, g, b);
+            if night {
+                (p.bg, p.sidebar, p.card, p.card_alt) = (c(4, 5, 6), c(12, 13, 15), c(14, 15, 18), c(22, 24, 27));
+                p.header = c(20, 30, 10);
+            } else {
+                (p.bg, p.sidebar, p.card, p.card_alt) = (c(11, 13, 16), c(20, 22, 26), c(22, 24, 28), c(30, 33, 38));
+                p.header = c(28, 42, 14);
+            }
+            (p.border, p.control_border) = (c(40, 43, 48), c(62, 66, 72));
+            (p.text, p.weak) = (c(236, 238, 240), c(150, 156, 162));
+            // Flat, like Network Manager: no colored glow behind the page.
+            p.glass = false;
+        }
         p
     }
 
@@ -173,6 +192,7 @@ impl Palette {
                 glass: false,
                 bg: Color32::from_rgb(2, 2, 8),
                 sidebar: Color32::from_rgb(5, 5, 16),
+                header: unset,
                 card: Color32::from_rgb(8, 8, 26),
                 card_alt: Color32::from_rgb(13, 13, 34),
                 border: Color32::from_rgb(24, 24, 62),
@@ -196,6 +216,7 @@ impl Palette {
                 glass: false,
                 bg: Color32::from_rgb(7, 7, 14),
                 sidebar: Color32::from_rgb(12, 12, 24),
+                header: unset,
                 card: Color32::from_rgb(16, 16, 34),
                 card_alt: Color32::from_rgb(22, 22, 48),
                 border: Color32::from_rgb(34, 34, 60),
@@ -219,6 +240,7 @@ impl Palette {
                 glass: false,
                 bg: Color32::from_rgb(244, 244, 248),
                 sidebar: Color32::from_rgb(255, 255, 255),
+                header: unset,
                 card: Color32::from_rgb(255, 255, 255),
                 card_alt: Color32::from_rgb(238, 238, 245),
                 border: Color32::from_rgb(203, 203, 219),
@@ -253,6 +275,11 @@ impl Palette {
     /// The bars (header, sidebar).
     pub fn bar(&self) -> Color32 {
         self.frost(self.sidebar, 0.78)
+    }
+
+    /// The top bar.
+    pub fn header_bar(&self) -> Color32 {
+        self.frost(self.header, 0.78)
     }
 
     /// The page behind the cards: see through to the backdrop when frosted.
