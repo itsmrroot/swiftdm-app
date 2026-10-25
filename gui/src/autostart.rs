@@ -20,8 +20,23 @@ fn program() -> Result<String> {
 /// An XDG autostart entry (Linux).
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 fn desktop_entry(exe: &str) -> String {
-    // A path with spaces is quoted, as the specification asks.
-    let exec = if exe.contains(' ') { format!("\"{exe}\"") } else { exe.to_string() };
+    // Always quoted, as the specification asks for special characters: inside
+    // quotes `\`, `"`, `` ` `` and `$` get a backslash and `%` is doubled;
+    // the file format then unescapes backslashes once more.
+    let mut quoted = String::from("\"");
+    for c in exe.chars() {
+        match c {
+            '\\' => quoted.push_str("\\\\\\\\"),
+            '"' | '`' | '$' => {
+                quoted.push_str("\\\\");
+                quoted.push(c);
+            }
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    let exec = quoted;
     format!(
         "[Desktop Entry]\nType=Application\nName=SwiftDM\nComment=Download manager\nExec={exec} {ARG}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
     )
@@ -115,7 +130,8 @@ mod tests {
 
     #[test]
     fn entries_start_the_program_minimized() {
-        assert!(desktop_entry("/opt/SwiftDM/swiftdm-gui").contains("Exec=/opt/SwiftDM/swiftdm-gui --minimized\n"));
+        assert!(desktop_entry("/opt/SwiftDM/swiftdm-gui").contains("Exec=\"/opt/SwiftDM/swiftdm-gui\" --minimized\n"));
+        assert!(desktop_entry("/h/100%/a$b").contains("Exec=\"/h/100%%/a\\\\$b\" --minimized\n"));
         assert!(
             desktop_entry("/home/a b/SwiftDM.AppImage").contains("Exec=\"/home/a b/SwiftDM.AppImage\" --minimized\n")
         );

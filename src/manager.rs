@@ -326,6 +326,9 @@ impl Manager {
 
     /// The checksum a finished file must have (see [`util::parse_checksum`]).
     pub fn set_expected_hash(&self, id: u64, hash: Option<String>) {
+        let hash = hash
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| matches!(h.len(), 64 | 128) && h.bytes().all(|b| b.is_ascii_hexdigit()));
         self.inner.update(id, |i| i.expected_hash = hash);
         self.inner.lock().dirty = true;
     }
@@ -345,6 +348,18 @@ impl Manager {
             };
             if matches!(item.status, Status::Active | Status::Done) {
                 return Err("a download that runs or is done cannot get another link");
+            }
+            // Another site must not get the login meant for the first one, and
+            // what was downloaded from the first is not part of the second.
+            if crate::util::host(&item.url) != crate::util::host(url) {
+                item.headers.retain(|(k, _)| {
+                    !["cookie", "origin", "referer", "authorization"].contains(&k.to_ascii_lowercase().as_str())
+                });
+                item.resume = None;
+                item.done = 0;
+                if let Some(p) = &item.path {
+                    let _ = std::fs::remove_file(crate::util::part_path(p));
+                }
             }
             item.url = url.to_string();
             item.error = None;
@@ -664,6 +679,7 @@ impl Manager {
         let what = self.item(id).map(|i| crate::util::redact_url(&i.url)).unwrap_or_default();
         log::warn!("download {id} failed: {message} ({what})");
         self.inner.update(id, |i| {
+            i.stage = None;
             // Paused or started again meanwhile: the user's choice stands.
             if i.status != Status::Active {
                 return;
@@ -679,14 +695,26 @@ impl Manager {
     }
 
     /// A file that has a checksum to meet is hashed first; one that does not
-    /// match is a failed download (its file stays, to be looked at).
+    /// match is a failed download (the file is deleted).
     fn verify_then_finish(&self, id: u64, path: PathBuf) {
         let Some(want) = self.item(id).and_then(|i| i.expected_hash) else { return self.finish(id, path) };
-        self.inner.update(id, |i| i.stage = Some("Checking the file".to_string()));
-        match crate::util::hash_file(&path, &want) {
+        // The file has its final name: a restart in the middle must not fetch it again.
+        self.inner.update(id, |i| {
+            i.stage = Some("Checking the file".to_string());
+            i.resume = None;
+        });
+        let result = crate::util::hash_file(&path, &want);
+        if self.item(id).is_none() {
+            // Removed from the list meanwhile.
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        match result {
             Ok(got) if got == want => self.finish(id, path),
             Ok(_) => {
-                self.inner.update(id, |i| i.path = Some(path.clone()));
+                // A damaged file is not kept: "Download again" would only add a copy.
+                let _ = std::fs::remove_file(&path);
+                self.inner.update(id, |i| i.path = None);
                 self.fail(id, "the file does not match its checksum: it is damaged or not the one meant".to_string());
             }
             Err(e) => self.fail(id, format!("the file could not be checked: {e}")),
@@ -855,7 +883,7 @@ impl Manager {
                 fragments: settings.connections.min(8),
             };
             match media::download(job, stop, &report) {
-                Ok(Some(path)) => return self.finish(id, path),
+                Ok(Some(path)) => return self.verify_then_finish(id, path),
                 Ok(None) => {
                     let status = self.stopped_status();
                     return self.inner.update(id, |i| {

@@ -13,6 +13,8 @@ use crate::theme::ThemeChoice;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     NewDownload,
+    /// The page of this version's release: what is new in it.
+    WhatsNew,
     PasteLink,
     ImportLinks,
     OpenFolder,
@@ -44,7 +46,6 @@ pub enum Command {
 }
 
 pub const PROJECT: &str = "https://github.com/itsmrroot/SwiftDM-release";
-const RELEASES: &str = "https://github.com/itsmrroot/SwiftDM-release/releases";
 const ISSUES: &str = "https://github.com/itsmrroot/SwiftDM-release/issues";
 
 /// Runs an edit command on the focused text field. The menu takes the key
@@ -194,7 +195,7 @@ pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice)
         ui.menu_button(tr("Help"), |ui| {
             item(ui, tr("SwiftDM Help"), "F1", Command::Help);
             ui.separator();
-            item(ui, tr("What's new"), "", Command::Open(RELEASES));
+            item(ui, tr("What's new"), "", Command::WhatsNew);
             item(ui, tr("Project page"), "", Command::Open(PROJECT));
             item(ui, tr("Report a problem"), "", Command::Open(ISSUES));
             ui.separator();
@@ -354,7 +355,7 @@ mod imp {
             )?;
 
             let help_item = self.item(tr("SwiftDM Help"), Command::Help, acc(cmd_shift, Code::Slash));
-            let news = self.item(tr("What's new"), Command::Open(RELEASES), None);
+            let news = self.item(tr("What's new"), Command::WhatsNew, None);
             let project = self.item(tr("Project page"), Command::Open(PROJECT), None);
             let issue = self.item(tr("Report a problem"), Command::Open(ISSUES), None);
             let help = Submenu::with_items(tr("Help"), true, &[&help_item, &sep(), &news, &project, &issue])?;

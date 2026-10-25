@@ -60,15 +60,28 @@ async function sendMany({ urls = [], referer = "", incognito = false }) {
   const list = urls.filter(usable).slice(0, 500);
   let reply = { ok: false, error: "no link" };
   const cookies = new Map();
+  // The login goes only to the page's own site, and the page's address only
+  // as its origin: a page decides which links it lists, not where cookies go.
+  const site = (h) => h.split(".").slice(-2).join(".");
+  let own = "";
+  let origin = "";
+  try {
+    const p = new URL(referer);
+    own = site(p.hostname);
+    origin = p.origin + "/";
+  } catch {
+    // No page address: no cookies, no referer.
+  }
   for (let i = 0; i < list.length; i += 50) {
     const items = [];
     for (const url of list.slice(i, i + 50)) {
-      const item = { url, mode: "file", referer, userAgent: navigator.userAgent };
-      if (!incognito) {
-        // The same cookies for the same site.
-        const host = new URL(url).hostname;
-        if (!cookies.has(host)) cookies.set(host, await cookieHeader(url));
-        item.cookies = cookies.get(host);
+      const item = { url, mode: "file", referer: origin, userAgent: navigator.userAgent };
+      const u = new URL(url);
+      if (!incognito && own && site(u.hostname) === own) {
+        // Cookies depend on scheme, folder and port: asked per folder.
+        const key = u.origin + u.pathname.replace(/[^/]*$/, "");
+        if (!cookies.has(key)) cookies.set(key, await cookieHeader(url));
+        item.cookies = cookies.get(key);
       }
       items.push(item);
     }

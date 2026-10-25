@@ -1,0 +1,41 @@
+name: Release notes
+
+# Writes the text of release pages from CHANGELOG.md: for a tag, or for all
+# of them (the releases made before the changelog existed had a generic text).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "A tag such as v1.7.0, or all"
+        default: all
+
+env:
+  PUBLIC: itsmrroot/SwiftDM-release
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Update the release pages
+        env:
+          PRIVATE_TOKEN: ${{ github.token }}
+          PUBLIC_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          WANTED: ${{ inputs.tag }}
+        run: |
+          if [ "$WANTED" = "all" ] || [ -z "$WANTED" ]; then
+            versions=$(grep -oE '^## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | cut -c4-)
+          else
+            versions="${WANTED#v}"
+          fi
+          for v in $versions; do
+            awk -v v="$v" '$0 ~ "^## " v "( |$)" {found=1; next} /^## / {found=0} found' CHANGELOG.md > notes.md
+            if ! grep -q '[^[:space:]]' notes.md; then echo "No notes for $v"; continue; fi
+            printf '\n---\nDownloads for Windows, macOS and Linux: see the [install guide](https://github.com/%s#-install).\n' "$PUBLIC" >> notes.md
+            GH_TOKEN="$PRIVATE_TOKEN" gh release edit "v$v" -R "$GITHUB_REPOSITORY" --notes-file notes.md || echo "private v$v: not edited"
+            GH_TOKEN="$PUBLIC_TOKEN" gh release edit "v$v" -R "$PUBLIC" --notes-file notes.md || echo "public v$v: not edited"
+          done

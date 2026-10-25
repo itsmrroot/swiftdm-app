@@ -110,12 +110,23 @@
       const k = kind || kindOf(url);
       if (!k) return;
       if (!found.has(k)) found.set(k, new Set());
-      found.get(k).add(url);
+      try {
+        const u = new URL(url);
+        if (url.length > 2048) return;
+        u.hash = "";
+        found.get(k).add(u.href);
+      } catch {
+        // Not an address.
+      }
     };
     for (const a of document.querySelectorAll("a[href]")) add(a.href);
     // Pictures as they are shown (not icons), also when the address has no ".jpg".
     for (const img of document.images) {
-      if (img.naturalWidth >= 120 || img.naturalHeight >= 120) add(img.currentSrc || img.src, "image");
+      // A picture that is a link to a larger one: the larger one is the file.
+      if (img.closest("a[href]") && kindOf(img.closest("a[href]").href) === "image") continue;
+      const loaded = img.complete && (img.naturalWidth >= 120 || img.naturalHeight >= 120);
+      const lazy = !img.complete && img.loading === "lazy";
+      if (loaded || lazy) add(img.currentSrc || img.src || img.dataset.src, "image");
     }
     for (const v of document.querySelectorAll("video, video source")) add(v.currentSrc || v.src, "video");
     for (const a of document.querySelectorAll("audio, audio source")) add(a.currentSrc || a.src, "audio");

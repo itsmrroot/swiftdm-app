@@ -262,6 +262,7 @@ pub const ARABIC: &[(&str, &str)] = &[
     ("could not start yt-dlp", "تعذّر تشغيل yt-dlp"),
     ("Joining video and sound", "جارٍ دمج الفيديو والصوت"),
     ("Converting the sound", "جارٍ تحويل الصوت"),
+    ("Kiwi", "كيوي"),
     ("Many files, and checks", "ملفات كثيرة، وفحوصات"),
     (
         "Many files with numbers: write the range in brackets. https://site.com/photo[01-30].jpg is thirty links; [a-f] goes through letters.",
@@ -923,6 +924,7 @@ pub const GERMAN: &[(&str, &str)] = &[
     ("could not start yt-dlp", "yt-dlp konnte nicht gestartet werden"),
     ("Joining video and sound", "Bild und Ton werden zusammengefügt"),
     ("Converting the sound", "Ton wird umgewandelt"),
+    ("Kiwi", "Kiwi"),
     ("Many files, and checks", "Viele Dateien und Prüfungen"),
     (
         "Many files with numbers: write the range in brackets. https://site.com/photo[01-30].jpg is thirty links; [a-f] goes through letters.",
@@ -1599,6 +1601,7 @@ pub const TURKISH: &[(&str, &str)] = &[
     ("could not start yt-dlp", "yt-dlp başlatılamadı"),
     ("Joining video and sound", "Görüntü ve ses birleştiriliyor"),
     ("Converting the sound", "Ses dönüştürülüyor"),
+    ("Kiwi", "Kivi"),
     ("Many files, and checks", "Çok sayıda dosya ve denetimler"),
     (
         "Many files with numbers: write the range in brackets. https://site.com/photo[01-30].jpg is thirty links; [a-f] goes through letters.",

@@ -30,6 +30,17 @@ jobs:
             have=$(grep -m1 '^version = ' "$f" | cut -d'"' -f2)
             [ "$have" = "$want" ] || { echo "::error::$f is version $have, but the tag is $GITHUB_REF_NAME"; exit 1; }
           done
+      # The text of the release page (and of "What's new" in the app) is the
+      # section of this version in CHANGELOG.md.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## " v "( |$)" {found=1; next} /^## / {found=0} found' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section '## $v'"
+            exit 1
+          fi
+          printf '\n---\nDownloads for Windows, macOS and Linux: see the [install guide](https://github.com/%s#-install).\n' "$PUBLIC" >> notes.md
       - name: Draft releases
         env:
           PRIVATE_TOKEN: ${{ github.token }}
@@ -38,11 +49,10 @@ jobs:
           tag="$GITHUB_REF_NAME"
           GH_TOKEN="$PRIVATE_TOKEN" gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
             GH_TOKEN="$PRIVATE_TOKEN" gh release create "$tag" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
-              --title "SwiftDM ${tag#v}" --generate-notes
+              --title "SwiftDM ${tag#v}" --notes-file notes.md
           GH_TOKEN="$PUBLIC_TOKEN" gh release view "$tag" -R "$PUBLIC" >/dev/null 2>&1 ||
             GH_TOKEN="$PUBLIC_TOKEN" gh release create "$tag" -R "$PUBLIC" --draft --target main \
-              --title "SwiftDM ${tag#v}" \
-              --notes "Downloads for Windows, macOS and Linux — see the [install guide](https://github.com/$PUBLIC#-install)."
+              --title "SwiftDM ${tag#v}" --notes-file notes.md
 
   extension:
     needs: draft

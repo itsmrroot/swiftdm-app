@@ -52,6 +52,9 @@ struct GhRelease {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    /// The release page's text (from CHANGELOG.md): what is new.
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     assets: Vec<GhAsset>,
 }
@@ -71,6 +74,8 @@ pub struct Release {
     /// Without the leading `v`.
     pub version: String,
     pub page: String,
+    /// What is new in it, line by line (see [`parse_notes`]).
+    pub notes: Vec<Note>,
     /// The installer for this system, if it can be installed from the app
     /// (and has already been published).
     asset: Option<Asset>,
@@ -182,6 +187,55 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// One line of "what's new".
+#[derive(Clone, Debug, PartialEq)]
+pub enum Note {
+    Heading(String),
+    Bullet(String),
+    Text(String),
+}
+
+/// The release page's text as lines to show: the markdown of the changelog
+/// without its marks (`**bold**`, `` `code` ``, `[text](link)`), up to the
+/// first rule ("---"), which starts the line about the downloads.
+pub fn parse_notes(body: &str) -> Vec<Note> {
+    let plain = |line: &str| -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(i) = rest.find('[') {
+            // "[text](link)" is its text.
+            match (rest[i..].find("]("), rest[i..].find(')')) {
+                (Some(mid), Some(end)) if mid < end => {
+                    out.push_str(&rest[..i]);
+                    out.push_str(&rest[i + 1..i + mid]);
+                    rest = &rest[i + end + 1..];
+                }
+                _ => break,
+            }
+        }
+        out.push_str(rest);
+        out.replace("**", "").replace(['`', '*'], "").trim().to_string()
+    };
+    let mut notes = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line == "---" || line == "***" {
+            break;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(h) = line.strip_prefix('#') {
+            notes.push(Note::Heading(plain(h.trim_start_matches('#'))));
+        } else if let Some(b) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            notes.push(Note::Bullet(plain(b)));
+        } else {
+            notes.push(Note::Text(plain(line)));
+        }
+    }
+    notes
+}
+
 /// Asks GitHub for the latest release. `None` means this is the newest.
 pub fn check() -> Result<Option<Release>> {
     let text = agent()
@@ -205,7 +259,7 @@ pub fn check() -> Result<Option<Release>> {
             sha256: a.digest.and_then(|d| d.strip_prefix("sha256:").map(str::to_ascii_lowercase)),
         })
     });
-    Ok(Some(Release { version, page: gh.html_url, asset }))
+    Ok(Some(Release { version, page: gh.html_url, notes: parse_notes(gh.body.as_deref().unwrap_or_default()), asset }))
 }
 
 /// Downloads the installer of `release` into a new temporary folder and
@@ -529,6 +583,28 @@ impl Updater {
                 p.text,
             );
             ui.hyperlink_to(icon_label(icon::LIST_BULLETS, "What's new"), &release.page);
+            // What is new, right here (the page it opens has the same).
+            if !release.notes.is_empty() {
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for note in &release.notes {
+                        match note {
+                            Note::Heading(t) => {
+                                ui.label(theme::semibold(t, theme::scale::BODY));
+                            }
+                            Note::Bullet(t) => {
+                                ui.horizontal_top(|ui| {
+                                    ui.label(RichText::new("•").color(p.accent_text));
+                                    ui.add(egui::Label::new(RichText::new(t).size(13.5).color(p.text)).wrap());
+                                });
+                            }
+                            Note::Text(t) => {
+                                ui.add(egui::Label::new(RichText::new(t).size(13.5).color(p.weak)).wrap());
+                            }
+                        }
+                    }
+                });
+            }
             ui.add_space(8.0);
 
             if let Some(job) = &self.download {
@@ -623,5 +699,20 @@ mod tests {
             assert!(workflow.contains(&format!("label: {label} ")), "{name}");
         }
         assert_eq!(asset_name(&Kind::Portable), None);
+    }
+
+    #[test]
+    fn the_release_page_text_becomes_lines() {
+        let body = "\n- **Many files:** `https://x.org/a[1-3].jpg` is three links.\n- **Change link…** (the ⋮ menu) see [the guide](https://x.org/g).\n\n## Fixes\nPlain text here.\n\n---\nDownloads for Windows: see the [install guide](https://github.com/x#-install).\n";
+        assert_eq!(
+            parse_notes(body),
+            vec![
+                Note::Bullet("Many files: https://x.org/a[1-3].jpg is three links.".into()),
+                Note::Bullet("Change link… (the ⋮ menu) see the guide.".into()),
+                Note::Heading("Fixes".into()),
+                Note::Text("Plain text here.".into()),
+            ]
+        );
+        assert!(parse_notes("").is_empty());
     }
 }

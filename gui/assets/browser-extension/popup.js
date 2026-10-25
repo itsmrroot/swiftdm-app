@@ -19,7 +19,10 @@ async function send(msg, button) {
   const reply = await ext.runtime.sendMessage({ type: "send", ...msg }).catch(() => null);
   if (button) {
     button.textContent = reply?.ok ? "✓ " + t("sent") : "⚠ " + t("failed");
-    if (!reply?.ok) $("setup").hidden = false;
+    if (!reply?.ok) {
+      $("setup").hidden = false;
+      button.disabled = false;
+    }
   }
   if (reply?.ok) setTimeout(() => window.close(), 700);
 }

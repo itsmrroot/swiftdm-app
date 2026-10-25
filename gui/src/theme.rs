@@ -61,13 +61,29 @@ pub enum Accent {
     Emerald,
     Orange,
     Rose,
+    /// The lime green of Network Manager's Kiwi.
+    Kiwi,
 }
 
 impl Accent {
-    pub const ALL: [Accent; 6] =
-        [Accent::Indigo, Accent::Blue, Accent::Violet, Accent::Emerald, Accent::Orange, Accent::Rose];
+    pub const ALL: [Accent; 7] =
+        [Accent::Indigo, Accent::Blue, Accent::Violet, Accent::Emerald, Accent::Orange, Accent::Rose, Accent::Kiwi];
 
+    /// As shown in the settings (the color for a dark theme).
     pub fn color(self) -> Color32 {
+        self.color_in(true)
+    }
+
+    /// For a dark or a light theme: the lime of Kiwi is too pale on white.
+    pub fn color_in(self, dark: bool) -> Color32 {
+        match self {
+            Accent::Kiwi if dark => Color32::from_rgb(159, 239, 0),
+            Accent::Kiwi => Color32::from_rgb(77, 124, 15),
+            other => other.fixed_color(),
+        }
+    }
+
+    fn fixed_color(self) -> Color32 {
         match self {
             Accent::Indigo => Color32::from_rgb(99, 102, 241),
             Accent::Blue => Color32::from_rgb(59, 130, 246),
@@ -75,6 +91,7 @@ impl Accent {
             Accent::Emerald => Color32::from_rgb(16, 185, 129),
             Accent::Orange => Color32::from_rgb(249, 115, 22),
             Accent::Rose => Color32::from_rgb(244, 63, 94),
+            Accent::Kiwi => Color32::from_rgb(159, 239, 0),
         }
     }
 
@@ -86,6 +103,7 @@ impl Accent {
             Accent::Emerald => i18n::tr("Emerald"),
             Accent::Orange => i18n::tr("Orange"),
             Accent::Rose => i18n::tr("Rose"),
+            Accent::Kiwi => i18n::tr("Kiwi"),
         }
     }
 }
@@ -147,7 +165,7 @@ impl Palette {
     }
 
     fn base(dark: bool, night: bool, accent: Accent) -> Self {
-        let accent = accent.color();
+        let accent = accent.color_in(dark);
         let unset = Color32::TRANSPARENT;
         if dark && night {
             Self {

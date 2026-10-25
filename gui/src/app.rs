@@ -338,7 +338,7 @@ impl App {
     }
 
     /// Opens the dialog for `text` (one or more links).
-    fn add_links(&mut self, ctx: &egui::Context, text: &str) {
+    fn add_links(&mut self, ctx: &egui::Context, text: &str) -> bool {
         let mut links: Vec<String> = Vec::new();
         let mut too_many = false;
         for word in text.split_whitespace().filter(|l| is_link(l)) {
@@ -357,22 +357,28 @@ impl App {
                 }
             }
         }
+        if links.len() > 1000 {
+            links.truncate(1000);
+            let amber = Color32::from_rgb(245, 158, 11);
+            self.toast(icon::WARNING, amber, tr("Too many links in the pattern"), "1000", ToastTarget::None);
+        }
         if links.is_empty() {
             if !too_many {
                 self.toast(
                     icon::WARNING,
                     Color32::from_rgb(245, 158, 11),
                     tr("That is not a link"),
-                    text.trim(),
+                    &text.trim().chars().take(200).collect::<String>(),
                     ToastTarget::None,
                 );
             }
-            return;
+            return false;
         }
         // Their "download the copied link?" offers are answered.
         self.toasts.retain(|t| !matches!(&t.target, ToastTarget::Link(u) if links.iter().any(|l| l == u)));
         let requests = links.iter().map(|l| Incoming::link(l)).collect();
         self.add_requests(ctx, requests);
+        true
     }
 
     /// Opens the dialog for links with what came along (from the browser).
@@ -568,6 +574,11 @@ impl App {
             return;
         }
         let file = path.to_string_lossy().into_owned();
+        let program = parts.remove(0);
+        // Never the program itself: that would run the downloaded file.
+        if program.contains("{file}") {
+            return;
+        }
         let named = parts.iter().any(|a| a.contains("{file}"));
         for a in &mut parts {
             *a = a.replace("{file}", &file);
@@ -575,15 +586,20 @@ impl App {
         if !named {
             parts.push(file);
         }
-        let program = parts.remove(0);
-        if let Err(e) = swiftdm::tools::command(&program)
+        match swiftdm::tools::command(&program)
             .args(&parts)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
         {
-            log::warn!("the program for finished files ({program}) did not start: {e}");
+            // Waited for in a thread: no zombie stays behind.
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => log::warn!("the program for finished files ({program}) did not start: {e}"),
         }
     }
 
@@ -821,6 +837,11 @@ impl App {
             Command::ZoomReset => self.settings.ui_scale = 1.0,
             Command::Theme(t) => self.settings.theme = t,
             Command::Open(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Command::WhatsNew => {
+                // This version's own page, with what is new in it.
+                let url = format!("https://github.com/itsmrroot/SwiftDM-release/releases/tag/v{}", update::current());
+                ctx.open_url(egui::OpenUrl::new_tab(url));
+            }
             Command::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             Command::FullScreen => {
                 let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -858,6 +879,11 @@ impl App {
 
     /// The links in a text, HTML or CSV file are added.
     fn import_file(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        if std::fs::metadata(path).is_ok_and(|m| m.len() > 5_000_000) {
+            let amber = Color32::from_rgb(245, 158, 11);
+            self.toast(icon::WARNING, amber, tr("That is not a link"), &path.display().to_string(), ToastTarget::None);
+            return;
+        }
         match std::fs::read(path) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -1322,10 +1348,12 @@ impl App {
                     });
                     if submit && !self.url.trim().is_empty() {
                         let url = self.url.clone();
-                        self.add_links(&ctx, &url);
                         // What was typed here is added; what someone else
                         // sent (the browser, a copied link) leaves it alone.
-                        self.url.clear();
+                        // A text that gave nothing stays, to be corrected.
+                        if self.add_links(&ctx, &url) {
+                            self.url.clear();
+                        }
                     }
                 });
             });
@@ -1771,7 +1799,7 @@ impl eframe::App for App {
         self.thumbs.poll(&ctx);
         let p = Palette::new(ui.visuals().dark_mode, self.settings.theme == ThemeChoice::Night, self.settings.accent);
         // Under everything: the soft background that frosted surfaces lie on.
-        theme::paint_backdrop(ui.painter(), ui.max_rect(), &p, self.settings.accent.color());
+        theme::paint_backdrop(ui.painter(), ui.max_rect(), &p, p.accent);
         let items = self.manager.items();
 
         // Ctrl/Cmd+V outside a text field adds the link.

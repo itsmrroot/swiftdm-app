@@ -452,7 +452,7 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// A checksum that is given must be met: the right file is done, another is
-/// a failure that says so (and its file stays).
+/// a failure that says so (and its file is deleted).
 #[test]
 fn a_checksum_is_checked() {
     let data = content(400_000, 21);
@@ -473,7 +473,7 @@ fn a_checksum_is_checked() {
     let it = m.item(id).unwrap();
     assert_eq!(it.status, Status::Failed);
     assert!(it.error.as_deref().is_some_and(|e| e.contains("checksum")), "{:?}", it.error);
-    assert!(it.path.is_some_and(|p| p.exists()), "the file stays to be looked at");
+    assert!(!dir.join("bad.bin").exists(), "a damaged file is not kept");
 }
 
 /// An address that expired is replaced and the download goes on.
