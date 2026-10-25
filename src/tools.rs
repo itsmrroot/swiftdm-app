@@ -300,6 +300,16 @@ pub fn latest_ytdlp() -> Result<String> {
     Ok(github_release("yt-dlp/yt-dlp", None)?.tag_name)
 }
 
+/// The newest version of `tool` as `--version` prints it, when it can be
+/// told without downloading (FFmpeg's cannot: `None`).
+pub fn latest_version(tool: Tool) -> Result<Option<String>> {
+    Ok(match tool {
+        Tool::YtDlp => Some(latest_ytdlp()?),
+        Tool::Deno => Some(github_release("denoland/deno", None)?.tag_name.trim_start_matches('v').to_string()),
+        Tool::Ffmpeg => None,
+    })
+}
+
 /// Progress of an installation: bytes so far and the total, if known.
 pub type OnProgress<'a> = &'a (dyn Fn(u64, Option<u64>) + Sync);
 

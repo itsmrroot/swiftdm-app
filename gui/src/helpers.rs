@@ -25,6 +25,13 @@ pub struct Helpers {
     installing: Option<(Tool, Job<PathBuf>)>,
     queue: VecDeque<Tool>,
     update_check: Option<Job<bool>>,
+    /// "Update" was clicked: looking for a newer version first.
+    checking: Option<(Tool, Job<Option<String>>)>,
+    /// An update the person asked for that is being installed: the tool, the
+    /// version it had and the one it gets (when known).
+    updating: Option<(Tool, String, Option<String>)>,
+    /// What an update did, for the person (in logical order).
+    pub notice: Option<String>,
     /// In logical order (see `theme::paragraph`).
     pub error: Option<String>,
     /// Shown after the first set was installed.
@@ -40,6 +47,9 @@ impl Helpers {
             installing: None,
             queue: VecDeque::new(),
             update_check: None,
+            checking: None,
+            updating: None,
+            notice: None,
             error: None,
             just_installed: false,
         };
@@ -92,6 +102,37 @@ impl Helpers {
                 Err(e) => log::info!("yt-dlp update check failed: {e:#}"),
             }
         }
+        if let Some((tool, job)) = &self.checking
+            && let Some(r) = job.poll()
+        {
+            let tool = *tool;
+            self.checking = None;
+            let installed = self
+                .status
+                .iter()
+                .flatten()
+                .find(|s| s.tool == tool)
+                .and_then(|s| s.version.clone())
+                .unwrap_or_default();
+            match r {
+                Ok(Some(latest)) if latest.trim_start_matches('v') == installed.trim_start_matches('v') => {
+                    self.notice = Some(trlf(
+                        "{tool} is up to date ({version}).",
+                        &[("tool", &tool.name()), ("version", &installed)],
+                    ));
+                }
+                Ok(latest) => {
+                    self.updating = Some((tool, installed, latest));
+                    self.install(ctx, &[tool]);
+                }
+                Err(e) => {
+                    self.error = Some(trlf(
+                        "{tool} could not be checked for updates: {error}",
+                        &[("tool", &tool.name()), ("error", &i18n::engine(&format!("{e:#}")))],
+                    ));
+                }
+            }
+        }
         if let Some((tool, job)) = &self.installing {
             match job.poll() {
                 None => ctx.request_repaint_after(Duration::from_millis(150)),
@@ -106,6 +147,18 @@ impl Helpers {
                             ));
                         }
                         self.queue.clear();
+                        self.updating = None;
+                    } else if let Some((t, old, new)) = self.updating.take_if(|(t, ..)| *t == tool) {
+                        self.notice = Some(match new {
+                            Some(new) => trlf(
+                                "{tool} updated from {old} to {new}. No restart is needed.",
+                                &[("tool", &t.name()), ("old", &old), ("new", &new)],
+                            ),
+                            None => trlf("{tool} was updated. No restart is needed.", &[("tool", &t.name())]),
+                        });
+                        if self.queue.is_empty() {
+                            self.just_installed = true;
+                        }
                     } else if self.queue.is_empty() {
                         self.just_installed = true;
                     }
@@ -143,6 +196,17 @@ impl Helpers {
         self.install(ctx, &missing);
     }
 
+    /// "Update" for `tool`: looks for a newer version, installs it and says
+    /// what happened (see `notice`).
+    pub fn update(&mut self, ctx: &egui::Context, tool: Tool) {
+        if self.checking.is_some() {
+            return;
+        }
+        self.error = None;
+        self.notice = None;
+        self.checking = Some((tool, Job::spawn(ctx, move |_, _| tools::latest_version(tool))));
+    }
+
     pub fn cancel(&mut self) {
         self.queue.clear();
         if let Some((_, job)) = &self.installing {
@@ -151,7 +215,7 @@ impl Helpers {
     }
 
     pub fn busy(&self) -> bool {
-        self.installing.is_some() || !self.queue.is_empty()
+        self.installing.is_some() || !self.queue.is_empty() || self.checking.is_some()
     }
 
     /// Whether `tool` is known to be there (yes until first looked at, so
@@ -217,6 +281,19 @@ impl Helpers {
         if dismiss {
             self.error = None;
         }
+        let mut close_notice = false;
+        if let Some(n) = &self.notice {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::CHECK_CIRCLE).color(p.success));
+                if ui.small_button(icon::X).on_hover_text(tr("Close")).clicked() {
+                    close_notice = true;
+                }
+                theme::paragraph(ui, n, 14.0, p.success);
+            });
+        }
+        if close_notice {
+            self.notice = None;
+        }
     }
 
     /// The table on the Settings page.
@@ -256,8 +333,9 @@ impl Helpers {
                     if !tools::installable(s.tool) {
                         return;
                     }
-                    let busy =
-                        self.installing.as_ref().is_some_and(|(t, _)| *t == s.tool) || self.queue.contains(&s.tool);
+                    let busy = self.installing.as_ref().is_some_and(|(t, _)| *t == s.tool)
+                        || self.queue.contains(&s.tool)
+                        || self.checking.as_ref().is_some_and(|(t, _)| *t == s.tool);
                     if busy {
                         ui.spinner();
                     } else if s.managed {
@@ -268,7 +346,7 @@ impl Helpers {
                             self.refresh(&ctx);
                         }
                         if ui.button(tr("Update")).on_hover_text(tr("Download the newest version")).clicked() {
-                            self.install(&ctx, &[s.tool]);
+                            self.update(&ctx, s.tool);
                         }
                     } else {
                         let label = if s.installed() { tr("Install own copy") } else { tr("Install") };

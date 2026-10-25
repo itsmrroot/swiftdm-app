@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.8.2
+
+- **Update in Settings → Helper programs now says what happened:** "yt-dlp is up to date (2026.10.21)", or "updated from … to …" and that no restart is needed. It looks for a newer version first, instead of downloading again.
+
 ## 1.8.1
 
 - **Kiwi in the dark theme now looks like Network Manager:** near-black surfaces, an olive top bar and lime green accents, flat without the colored glow.
