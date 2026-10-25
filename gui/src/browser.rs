@@ -107,6 +107,7 @@ fn incoming(item: &Value, ask: Option<bool>) -> Option<Incoming> {
         headers,
         name: s("filename").map(str::to_string),
         ask,
+        from_browser: true,
     })
 }
 

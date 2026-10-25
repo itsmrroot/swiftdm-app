@@ -49,6 +49,24 @@ async function send(msg, button) {
   $("video").onclick = (e) => send({ url: target, mode: "video", referer: page }, e.target);
   $("audio").onclick = (e) => send({ url: target, mode: "audio", referer: page }, e.target);
 
+  // The files this page offers, by kind: all of one kind with one click.
+  if (web) {
+    const files = await ext.tabs.sendMessage(tab.id, { type: "page-files" }).catch(() => null);
+    const kinds = ["image", "video", "audio", "document", "archive", "program"].filter((k) => files?.groups?.[k]?.length);
+    for (const kind of kinds) {
+      const urls = files.groups[kind];
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="name"></span><span class="meta"></span><button></button>`;
+      li.querySelector(".name").textContent = t(`kind_${kind}`);
+      li.querySelector(".meta").textContent = String(urls.length);
+      const b = li.querySelector("button");
+      b.textContent = t("downloadAll");
+      b.onclick = () => send({ type: "bulk", urls, referer: page, incognito: !!tab.incognito }, b);
+      $("groups").appendChild(li);
+    }
+    $("grab").hidden = kinds.length === 0;
+  }
+
   // Media files the page loaded.
   const key = `tab:${tab?.id}`;
   const list = (await ext.storage.session.get(key))[key] || [];

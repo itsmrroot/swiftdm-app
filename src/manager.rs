@@ -65,6 +65,10 @@ pub struct Item {
     /// that came from the browser extension.
     #[serde(default)]
     pub headers: Vec<(String, String)>,
+    /// What the finished file must hash to (hex, SHA-256 or SHA-512): if it
+    /// does not, the download fails and says so.
+    #[serde(default)]
+    pub expected_hash: Option<String>,
     /// Bytes per second, while running.
     #[serde(skip)]
     pub speed: f64,
@@ -122,6 +126,8 @@ pub struct Settings {
     pub proxy: Option<String>,
     /// Files go into a folder for their kind: Video, Music, Documents, ….
     pub sort_by_kind: bool,
+    /// The browser name to give servers, instead of SwiftDM's own.
+    pub user_agent: Option<String>,
 }
 
 impl Default for Settings {
@@ -134,6 +140,7 @@ impl Default for Settings {
             auto_cookies: true,
             proxy: None,
             sort_by_kind: false,
+            user_agent: None,
         }
     }
 }
@@ -317,6 +324,40 @@ impl Manager {
         self.add_with(url, source, name, dir, thumbnail, Vec::new())
     }
 
+    /// The checksum a finished file must have (see [`util::parse_checksum`]).
+    pub fn set_expected_hash(&self, id: u64, hash: Option<String>) {
+        self.inner.update(id, |i| i.expected_hash = hash);
+        self.inner.lock().dirty = true;
+    }
+
+    /// A new link for a download that is not running: for an address that
+    /// expired or moved. What was downloaded is kept; a failed download goes
+    /// on at once. Errors with the reason (in the engine's words).
+    pub fn change_url(&self, id: u64, url: &str) -> Result<(), &'static str> {
+        let url = url.trim();
+        if !crate::util::is_link(url) {
+            return Err("this is not a valid link");
+        }
+        {
+            let mut s = self.inner.lock();
+            let Some(item) = s.items.iter_mut().find(|i| i.id == id) else {
+                return Err("the download is not in the list");
+            };
+            if matches!(item.status, Status::Active | Status::Done) {
+                return Err("a download that runs or is done cannot get another link");
+            }
+            item.url = url.to_string();
+            item.error = None;
+            if item.status == Status::Failed {
+                item.status = Status::Queued;
+            }
+            s.dirty = true;
+        }
+        self.inner.notify();
+        self.schedule();
+        Ok(())
+    }
+
     /// Like [`Manager::add`], with headers to send (see [`http::ALLOWED_HEADERS`]).
     pub fn add_with(
         &self,
@@ -352,6 +393,7 @@ impl Manager {
                 order: 0,
                 work_dir: None,
                 headers,
+                expected_hash: None,
                 speed: 0.0,
                 eta: None,
                 stage: None,
@@ -636,6 +678,21 @@ impl Manager {
         self.inner.lock().dirty = true;
     }
 
+    /// A file that has a checksum to meet is hashed first; one that does not
+    /// match is a failed download (its file stays, to be looked at).
+    fn verify_then_finish(&self, id: u64, path: PathBuf) {
+        let Some(want) = self.item(id).and_then(|i| i.expected_hash) else { return self.finish(id, path) };
+        self.inner.update(id, |i| i.stage = Some("Checking the file".to_string()));
+        match crate::util::hash_file(&path, &want) {
+            Ok(got) if got == want => self.finish(id, path),
+            Ok(_) => {
+                self.inner.update(id, |i| i.path = Some(path.clone()));
+                self.fail(id, "the file does not match its checksum: it is damaged or not the one meant".to_string());
+            }
+            Err(e) => self.fail(id, format!("the file could not be checked: {e}")),
+        }
+    }
+
     fn finish(&self, id: u64, path: PathBuf) {
         let size = std::fs::metadata(&path).map(|m| m.len()).ok();
         if let Some(item) = self.item(id) {
@@ -662,6 +719,19 @@ impl Manager {
         self.inner.lock().dirty = true;
     }
 
+    /// How requests for `item` go out: proxy, its headers and, when set,
+    /// the user agent of the settings (the item's own, from a browser, wins).
+    fn net_for(&self, item: &Item) -> http::Net {
+        let settings = self.settings();
+        let mut headers = item.headers.clone();
+        if let Some(ua) = settings.user_agent.as_deref().map(str::trim).filter(|u| !u.is_empty())
+            && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+        {
+            headers.push(("User-Agent".to_string(), ua.to_string()));
+        }
+        http::Net { proxy: settings.proxy, headers }
+    }
+
     fn run_file(&self, id: u64, stop: &AtomicBool) {
         let Some(item) = self.item(id) else { return };
         // The file name is chosen once, so that a paused download continues
@@ -672,7 +742,7 @@ impl Manager {
                 let name = if !item.name.is_empty() {
                     sanitize_filename(&item.name)
                 } else {
-                    let net = http::Net { proxy: self.settings().proxy, headers: item.headers.clone() };
+                    let net = self.net_for(&item);
                     match http::probe_with(&item.url, &net) {
                         Ok(p) => p.name,
                         Err(e) => return self.fail(id, capitalize(&format!("{e:#}"))),
@@ -707,7 +777,7 @@ impl Manager {
         }
         let settings = self.settings();
         let report = Progress::new(self.inner.clone(), id);
-        let net = http::Net { proxy: settings.proxy.clone(), headers: item.headers.clone() };
+        let net = self.net_for(&item);
         let job = http::Job {
             url: &item.url,
             path: &path,
@@ -716,7 +786,7 @@ impl Manager {
             net,
         };
         match http::download(job, stop, &self.inner.limiter, &report) {
-            Ok(Outcome::Finished(p)) => self.finish(id, p),
+            Ok(Outcome::Finished(p)) => self.verify_then_finish(id, p),
             Ok(Outcome::Stopped(resume)) => self.stopped(id, resume),
             Err(f) => {
                 if f.resume.is_some() {

@@ -82,5 +82,29 @@
   },
   "showHere": {
     "message": "Show the button on this site"
+  },
+  "onThisPage": {
+    "message": "On this page"
+  },
+  "downloadAll": {
+    "message": "Download all"
+  },
+  "kind_image": {
+    "message": "Pictures"
+  },
+  "kind_video": {
+    "message": "Videos"
+  },
+  "kind_audio": {
+    "message": "Music"
+  },
+  "kind_document": {
+    "message": "Documents"
+  },
+  "kind_archive": {
+    "message": "Archives"
+  },
+  "kind_program": {
+    "message": "Programs"
   }
 }

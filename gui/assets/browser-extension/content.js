@@ -85,12 +85,55 @@
     return pool.sort((a, b) => visible(b) - visible(a))[0] || null;
   }
 
+  // The files a page offers, by kind: for "download all of these".
+  const KINDS = [
+    ["image", /\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/i],
+    ["video", /\.(mp4|webm|mkv|mov|m4v|avi|flv|wmv)$/i],
+    ["audio", /\.(mp3|m4a|aac|ogg|opus|flac|wav)$/i],
+    ["document", /\.(pdf|docx?|xlsx?|pptx?|txt|epub|csv|odt|ods|rtf)$/i],
+    ["archive", /\.(zip|rar|7z|tar|gz|bz2|xz|tgz|iso|dmg)$/i],
+    ["program", /\.(exe|msi|apk|deb|rpm|pkg|appimage|jar)$/i],
+  ];
+  const kindOf = (url) => {
+    try {
+      const path = new URL(url).pathname;
+      return KINDS.find(([, re]) => re.test(path))?.[0] ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  function pageFiles() {
+    const found = new Map();
+    const add = (url, kind) => {
+      if (!/^https?:\/\//i.test(url || "")) return;
+      const k = kind || kindOf(url);
+      if (!k) return;
+      if (!found.has(k)) found.set(k, new Set());
+      found.get(k).add(url);
+    };
+    for (const a of document.querySelectorAll("a[href]")) add(a.href);
+    // Pictures as they are shown (not icons), also when the address has no ".jpg".
+    for (const img of document.images) {
+      if (img.naturalWidth >= 120 || img.naturalHeight >= 120) add(img.currentSrc || img.src, "image");
+    }
+    for (const v of document.querySelectorAll("video, video source")) add(v.currentSrc || v.src, "video");
+    for (const a of document.querySelectorAll("audio, audio source")) add(a.currentSrc || a.src, "audio");
+    const groups = {};
+    for (const [kind, urls] of found) groups[kind] = [...urls].slice(0, 500);
+    return { groups };
+  }
+
   // The element last right-clicked: "download this video" is about that one.
   let clicked = null;
   document.addEventListener("contextmenu", (e) => (clicked = e.target), { capture: true, passive: true });
 
   // The popup asks which video this page is showing.
   ext.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (msg?.type === "page-files") {
+      reply(pageFiles());
+      return;
+    }
     if (msg?.type !== "current-video") return;
     // The right-clicked video (when it was one), else the one being watched.
     const asked = clicked?.closest?.("video") || (msg.context ? clicked?.querySelector?.("video") : null);

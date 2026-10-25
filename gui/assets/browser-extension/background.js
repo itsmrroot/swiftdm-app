@@ -52,6 +52,33 @@ async function sendLink({ url, mode = "auto", referer = "", filename = "", ask =
   return reply;
 }
 
+/**
+ * Sends many links at once (the files of a page): started without questions.
+ * In parts, so that a message to the app stays small.
+ */
+async function sendMany({ urls = [], referer = "", incognito = false }) {
+  const list = urls.filter(usable).slice(0, 500);
+  let reply = { ok: false, error: "no link" };
+  const cookies = new Map();
+  for (let i = 0; i < list.length; i += 50) {
+    const items = [];
+    for (const url of list.slice(i, i + 50)) {
+      const item = { url, mode: "file", referer, userAgent: navigator.userAgent };
+      if (!incognito) {
+        // The same cookies for the same site.
+        const host = new URL(url).hostname;
+        if (!cookies.has(host)) cookies.set(host, await cookieHeader(url));
+        item.cookies = cookies.get(host);
+      }
+      items.push(item);
+    }
+    reply = await native({ type: "download", items, ask: false });
+    if (!reply.ok) break;
+  }
+  await badge(reply.ok);
+  return reply;
+}
+
 async function badge(ok) {
   await ext.action.setBadgeBackgroundColor({ color: ok ? "#16a34a" : "#dc2626" });
   await ext.action.setBadgeText({ text: ok ? "✓" : "!" });
@@ -252,6 +279,11 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
         // browser's cookies on its own.
         if (sender.tab) return { ok: false, error: "not allowed" };
         return sendLink(msg);
+      case "bulk": {
+        // From the popup only, like "send".
+        if (sender.tab) return { ok: false, error: "not allowed" };
+        return sendMany(msg);
+      }
       case "video": {
         // The button on a video: its own link as the page found it (on a
         // feed, the post it is in), unless the video is a plain file.

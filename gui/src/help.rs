@@ -140,6 +140,38 @@ pub fn page(ui: &mut Ui, p: &Palette) -> HelpAction {
         text(ui, p, trl("Several links at once: paste them all, or use Import links from a file in the menu."));
     });
 
+    section(ui, p, icon::STACK, tr("Many files, and checks"), false, |ui| {
+        text(
+            ui,
+            p,
+            trl(
+                "Many files with numbers: write the range in brackets. https://site.com/photo[01-30].jpg is thirty links; [a-f] goes through letters.",
+            ),
+        );
+        text(
+            ui,
+            p,
+            trl(
+                "A link that expired or moved: open the ⋮ menu of the download and choose Change link…. What was downloaded so far is kept.",
+            ),
+        );
+        text(
+            ui,
+            p,
+            trl(
+                "To be sure a file is whole: give its checksum when you add it, or choose Verify checksum… later. A file that does not match fails, and says so.",
+            ),
+        );
+        text(ui, p, trl("Drop a text, CSV or HTML file with links on the window to add all of them."));
+        text(
+            ui,
+            p,
+            trl(
+                "In Settings you can start SwiftDM when you sign in, and run a program for each finished file, such as a virus scan.",
+            ),
+        );
+    });
+
     section(ui, p, icon::BROWSER, tr("In your browser"), false, |ui| {
         text(
             ui,
@@ -156,6 +188,9 @@ pub fn page(ui: &mut Ui, p: &Palette) -> HelpAction {
                 trl("Point at a video: a Download button appears on it (video or sound)."),
                 trl("Downloads the browser starts go to SwiftDM by themselves (you can turn this off)."),
                 trl("The extension's button lists the video and audio files the page has loaded."),
+                trl(
+                    "It also lists the pictures, documents and other files on the page: one click downloads all of one kind.",
+                ),
             ],
         );
         if theme::primary_button(

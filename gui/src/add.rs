@@ -55,6 +55,8 @@ pub struct NewDownload {
     pub thumbnail: Option<String>,
     /// From the browser: its cookies and page.
     pub headers: Vec<(String, String)>,
+    /// What the finished file must hash to, if the person gave it.
+    pub expected_hash: Option<String>,
 }
 
 pub enum Action {
@@ -88,6 +90,8 @@ pub struct AddDialog {
     part: Option<(String, String)>,
     /// Downloaded before: its name and when.
     pub before: Option<(String, i64)>,
+    /// A checksum to meet, as typed (a file only).
+    checksum: String,
 }
 
 /// Finds out what `url` is. Tries the logins of the usual browsers when a
@@ -203,6 +207,7 @@ impl AddDialog {
             name_hint: request.name.filter(|n| !n.trim().is_empty()),
             part: None,
             before: None,
+            checksum: String::new(),
         }
     }
 
@@ -265,6 +270,7 @@ impl AddDialog {
                 dir: self.dir.clone(),
                 thumbnail: info.thumbnail.clone(),
                 headers: self.headers.clone(),
+                expected_hash: None,
             }],
             Stage::File(_) => vec![NewDownload {
                 url: self.url.clone(),
@@ -273,6 +279,7 @@ impl AddDialog {
                 dir: self.dir.clone(),
                 thumbnail: None,
                 headers: self.headers.clone(),
+                expected_hash: swiftdm::util::parse_checksum(&self.checksum),
             }],
             Stage::Playlist { title, entries, selected } => {
                 let dir = if self.own_folder && !title.is_empty() {
@@ -291,6 +298,7 @@ impl AddDialog {
                         dir: dir.clone(),
                         thumbnail: None,
                         headers: Vec::new(),
+                        expected_hash: None,
                     })
                     .collect()
             }
@@ -373,6 +381,7 @@ impl AddDialog {
                                 dir: self.dir.clone(),
                                 thumbnail: None,
                                 headers: self.headers.clone(),
+                                expected_hash: None,
                             }]);
                         }
                         if theme::secondary_button(ui, tr("Close")).clicked() {
@@ -383,7 +392,10 @@ impl AddDialog {
                 }
                 Stage::Media(info) => media_card(ui, p, info, thumbs),
                 Stage::Playlist { title, entries, selected } => playlist_card(ui, p, title, entries, selected),
-                Stage::File(probe) => file_card(ui, p, probe, &mut self.file_name),
+                Stage::File(probe) => {
+                    file_card(ui, p, probe, &mut self.file_name);
+                    checksum_row(ui, p, &mut self.checksum);
+                }
             }
             // A plain file has no choices of its own: the folder follows closely.
             let plain = matches!(self.stage, Stage::File(_));
@@ -662,6 +674,26 @@ fn playlist_card(ui: &mut Ui, p: &Palette, title: &str, entries: &[media::Entry]
                 }
             },
         );
+    });
+}
+
+/// "Checksum (optional)": what the site says the file hashes to. A file that
+/// does not match fails (and says so) instead of being kept as if it were fine.
+fn checksum_row(ui: &mut Ui, p: &Palette, text: &mut String) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(icon::SEAL_CHECK).color(p.weak));
+        ui.add(
+            egui::TextEdit::singleline(text)
+                .desired_width(ui.available_width().min(440.0) - 30.0)
+                .hint_text(tr("Checksum, if you have one (SHA-256 or SHA-512)")),
+        );
+        if !text.trim().is_empty() {
+            match swiftdm::util::parse_checksum(text) {
+                Some(_) => ui.label(RichText::new(icon::CHECK_CIRCLE).color(p.success)),
+                None => ui.label(RichText::new(icon::WARNING).color(p.warning)).on_hover_text(tr("Not a checksum")),
+            };
+        }
     });
 }
 

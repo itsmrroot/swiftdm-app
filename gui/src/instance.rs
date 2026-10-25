@@ -46,6 +46,9 @@ pub struct Incoming {
     /// Show the choices first; `None`: as in Settings.
     #[serde(default)]
     pub ask: Option<bool>,
+    /// Sent by the browser extension.
+    #[serde(default)]
+    pub from_browser: bool,
 }
 
 impl Incoming {

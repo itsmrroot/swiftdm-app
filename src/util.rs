@@ -163,6 +163,177 @@ pub fn is_link(text: &str) -> bool {
         && t.split("://").nth(1).is_some_and(|rest| rest.split('/').next().is_some_and(|host| host.contains('.')))
 }
 
+/// How many links one pattern may make.
+pub const MAX_PATTERN_LINKS: usize = 500;
+
+/// One bracket group of a pattern: `[1-30]`, `[001-120]` or `[a-f]`.
+enum Group {
+    Numbers { start: u64, count: u64, width: usize },
+    Letters { start: u8, count: u64 },
+}
+
+impl Group {
+    fn parse(text: &str) -> Option<Group> {
+        let (a, b) = text.split_once('-')?;
+        let digits = |t: &str| !t.is_empty() && t.len() <= 9 && t.bytes().all(|c| c.is_ascii_digit());
+        if digits(a) && digits(b) {
+            let (start, end) = (a.parse::<u64>().ok()?, b.parse::<u64>().ok()?);
+            // "[001-120]" keeps its zeros.
+            let width = if a.len() > 1 && a.starts_with('0') { a.len() } else { 0 };
+            return (end >= start).then(|| Group::Numbers { start, count: end - start + 1, width });
+        }
+        match (a.as_bytes(), b.as_bytes()) {
+            ([x], [y])
+                if x.is_ascii_alphabetic()
+                    && y.is_ascii_alphabetic()
+                    && x.is_ascii_lowercase() == y.is_ascii_lowercase()
+                    && y >= x =>
+            {
+                Some(Group::Letters { start: *x, count: (*y - *x) as u64 + 1 })
+            }
+            _ => None,
+        }
+    }
+
+    fn count(&self) -> u64 {
+        match self {
+            Group::Numbers { count, .. } | Group::Letters { count, .. } => *count,
+        }
+    }
+
+    fn nth(&self, n: u64) -> String {
+        match self {
+            Group::Numbers { start, width, .. } => format!("{:0w$}", start + n, w = *width),
+            Group::Letters { start, .. } => ((*start + n as u8) as char).to_string(),
+        }
+    }
+}
+
+/// The links a pattern stands for: `https://site/img[1-30].jpg` is thirty
+/// links, `[001-120]` keeps its zeros, `[a-f]` goes through letters; several
+/// groups make every combination. The pattern is looked for after the host
+/// (an IPv6 address has brackets too). `Ok(None)`: not a pattern. `Err(n)`:
+/// it would make `n` links, more than [`MAX_PATTERN_LINKS`].
+pub fn expand_pattern(url: &str) -> Result<Option<Vec<String>>, u64> {
+    let host_end = url.find("://").map_or(0, |i| i + 3);
+    let path_at = url[host_end..].find('/').map_or(url.len(), |i| host_end + i);
+    let (head, tail) = url.split_at(path_at);
+    let mut literals: Vec<String> = vec![String::new()];
+    let mut groups: Vec<Group> = Vec::new();
+    let mut rest = tail;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find(']').map(|i| open + i) else { break };
+        match Group::parse(&rest[open + 1..close]) {
+            Some(g) => {
+                if let Some(last) = literals.last_mut() {
+                    last.push_str(&rest[..open]);
+                }
+                groups.push(g);
+                literals.push(String::new());
+            }
+            // Not a range: brackets that belong to the link.
+            None => {
+                if let Some(last) = literals.last_mut() {
+                    last.push_str(&rest[..=close]);
+                }
+            }
+        }
+        rest = &rest[close + 1..];
+    }
+    if groups.is_empty() {
+        return Ok(None);
+    }
+    if let Some(last) = literals.last_mut() {
+        last.push_str(rest);
+    }
+    let total = groups.iter().fold(1u64, |t, g| t.saturating_mul(g.count()));
+    if total > MAX_PATTERN_LINKS as u64 {
+        return Err(total);
+    }
+    let mut links = Vec::with_capacity(total as usize);
+    for n in 0..total {
+        let mut url = String::from(head);
+        url.push_str(&literals[0]);
+        // The last group changes fastest.
+        let mut left = n;
+        let mut picks = vec![0; groups.len()];
+        for (i, g) in groups.iter().enumerate().rev() {
+            picks[i] = left % g.count();
+            left /= g.count();
+        }
+        for (i, g) in groups.iter().enumerate() {
+            url.push_str(&g.nth(picks[i]));
+            url.push_str(&literals[i + 1]);
+        }
+        links.push(url);
+    }
+    Ok(Some(links))
+}
+
+/// A checksum out of text a person pasted: "sha256:abc…", "abc…  file.iso"
+/// or just the digits. SHA-256 (64) and SHA-512 (128 hex digits) are known.
+pub fn parse_checksum(text: &str) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || c == ':' || c == '=')
+        .map(str::trim)
+        .find(|t| matches!(t.len(), 64 | 128) && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+}
+
+/// The hex digest of `path`, of the kind `expected` is (64 digits: SHA-256,
+/// 128: SHA-512).
+pub fn hash_file(path: &Path, expected: &str) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256, Sha512};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if expected.len() == 128 {
+        let mut h = Sha512::new();
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                return Ok(hex(&h.finalize()));
+            }
+            h.update(&buf[..n]);
+        }
+    }
+    let mut h = Sha256::new();
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hex(&h.finalize()));
+        }
+        h.update(&buf[..n]);
+    }
+}
+
+/// A command line into its parts: spaces separate, double quotes group (a
+/// backslash is nothing special, as it is in Windows paths).
+pub fn split_command(line: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let (mut quoted, mut any) = (false, false);
+    for c in line.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any || !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                    any = false;
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if any || !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
 /// The host of a link, without `www.`.
 pub fn host(url: &str) -> &str {
     let rest = url.split("://").nth(1).unwrap_or(url);
@@ -367,5 +538,68 @@ mod tests {
         assert_eq!(redact_url("https://user:pw@host.org/f/a.zip?token=SECRET#x"), "https://host.org/f/a.zip");
         assert_eq!(redact_url("http://host.org"), "http://host.org");
         assert_eq!(redact_url("https://h.org/a?b"), "https://h.org/a");
+    }
+
+    #[test]
+    fn patterns_make_links() {
+        let links = expand_pattern("https://a.org/img[1-3].jpg").unwrap().unwrap();
+        assert_eq!(links, ["https://a.org/img1.jpg", "https://a.org/img2.jpg", "https://a.org/img3.jpg"]);
+        let zeros = expand_pattern("https://a.org/p[008-011].png").unwrap().unwrap();
+        assert_eq!(
+            zeros,
+            ["https://a.org/p008.png", "https://a.org/p009.png", "https://a.org/p010.png", "https://a.org/p011.png"]
+        );
+        let letters = expand_pattern("https://a.org/[a-c]/x.zip").unwrap().unwrap();
+        assert_eq!(letters, ["https://a.org/a/x.zip", "https://a.org/b/x.zip", "https://a.org/c/x.zip"]);
+        // Several groups: every combination, the last changing fastest.
+        let both = expand_pattern("https://a.org/[1-2]/p[1-2].jpg").unwrap().unwrap();
+        assert_eq!(
+            both,
+            ["https://a.org/1/p1.jpg", "https://a.org/1/p2.jpg", "https://a.org/2/p1.jpg", "https://a.org/2/p2.jpg"]
+        );
+        // Not patterns: no brackets, an IPv6 host, brackets that are no range.
+        assert_eq!(expand_pattern("https://a.org/x.zip"), Ok(None));
+        assert_eq!(expand_pattern("http://[::1]:8080/file.zip"), Ok(None));
+        assert_eq!(expand_pattern("https://a.org/f[abc].zip"), Ok(None));
+        assert_eq!(expand_pattern("https://a.org/f[3-1].zip"), Ok(None));
+        // Too many.
+        assert_eq!(expand_pattern("https://a.org/f[1-100000].zip"), Err(100_000));
+        assert_eq!(expand_pattern("https://a.org/[1-30]/[1-30].zip"), Err(900));
+    }
+
+    #[test]
+    fn checksums_are_found_in_pasted_text() {
+        let h = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(parse_checksum(h).as_deref(), Some(h));
+        assert_eq!(parse_checksum(&format!("SHA256: {}", h.to_uppercase())).as_deref(), Some(h));
+        assert_eq!(parse_checksum(&format!("{h}  ubuntu.iso\n")).as_deref(), Some(h));
+        assert_eq!(parse_checksum("sha256:e3b0"), None);
+        assert_eq!(parse_checksum("not a checksum"), None);
+        let long = "a".repeat(128);
+        assert_eq!(parse_checksum(&long).as_deref(), Some(long.as_str()));
+    }
+
+    #[test]
+    fn a_file_is_hashed_by_the_kind_of_the_expected_checksum() {
+        let dir = std::env::temp_dir().join(format!("swiftdm-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("empty");
+        std::fs::write(&file, b"").unwrap();
+        let sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(hash_file(&file, sha256).unwrap(), sha256);
+        let sha512 = hash_file(&file, &"0".repeat(128)).unwrap();
+        assert!(sha512.starts_with("cf83e1357eefb8bd"), "{sha512}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commands_are_split_like_a_person_reads_them() {
+        assert_eq!(split_command(r#"scan -f {file}"#), ["scan", "-f", "{file}"]);
+        assert_eq!(
+            split_command(r#""C:\Program Files\Defender\Scan.exe" -File "{file}" --quiet"#),
+            [r"C:\Program Files\Defender\Scan.exe", "-File", "{file}", "--quiet"]
+        );
+        assert_eq!(split_command("   "), Vec::<String>::new());
+        assert_eq!(split_command(r#"a "" b"#), ["a", "", "b"]);
     }
 }

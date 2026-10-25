@@ -82,5 +82,29 @@
   },
   "showHere": {
     "message": "إظهار الزر في هذا الموقع"
+  },
+  "onThisPage": {
+    "message": "في هذه الصفحة"
+  },
+  "downloadAll": {
+    "message": "تنزيل الكل"
+  },
+  "kind_image": {
+    "message": "صور"
+  },
+  "kind_video": {
+    "message": "فيديو"
+  },
+  "kind_audio": {
+    "message": "موسيقى"
+  },
+  "kind_document": {
+    "message": "مستندات"
+  },
+  "kind_archive": {
+    "message": "أرشيفات"
+  },
+  "kind_program": {
+    "message": "برامج"
   }
 }

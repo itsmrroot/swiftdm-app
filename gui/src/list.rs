@@ -62,6 +62,10 @@ pub enum RowAction {
     CopyLink(u64),
     StartNext(u64),
     CopyHash(u64),
+    /// Compare the file with a checksum that is typed in.
+    Verify(u64),
+    /// A new address for the same download.
+    ChangeLink(u64),
     OpenLink(u64),
     Remove(u64),
     Delete(u64),
@@ -327,6 +331,11 @@ fn menu(ui: &mut Ui, item: &Item) -> Option<RowAction> {
     }
     if item.status == Status::Done {
         entry(ui, i18n::icon_label(icon::FINGERPRINT, "Copy SHA-256"), RowAction::CopyHash(id));
+        entry(ui, i18n::icon_label(icon::SEAL_CHECK, "Verify checksum…"), RowAction::Verify(id));
+    }
+    // An address that expired or moved: the download goes on with the new one.
+    if item.status != Status::Done && item.status != Status::Active {
+        entry(ui, i18n::icon_label(icon::LINK_SIMPLE, "Change link…"), RowAction::ChangeLink(id));
     }
     entry(ui, i18n::icon_label(icon::COPY, "Copy link"), RowAction::CopyLink(id));
     entry(ui, i18n::icon_label(icon::GLOBE, "Open link in browser"), RowAction::OpenLink(id));
@@ -423,6 +432,7 @@ mod tests {
             note: None,
             order: 0,
             work_dir: None,
+            expected_hash: None,
         }
     }
 

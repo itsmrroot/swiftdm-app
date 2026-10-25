@@ -82,5 +82,29 @@
   },
   "showHere": {
     "message": "Knopf auf dieser Seite zeigen"
+  },
+  "onThisPage": {
+    "message": "Auf dieser Seite"
+  },
+  "downloadAll": {
+    "message": "Alle laden"
+  },
+  "kind_image": {
+    "message": "Bilder"
+  },
+  "kind_video": {
+    "message": "Videos"
+  },
+  "kind_audio": {
+    "message": "Musik"
+  },
+  "kind_document": {
+    "message": "Dokumente"
+  },
+  "kind_archive": {
+    "message": "Archive"
+  },
+  "kind_program": {
+    "message": "Programme"
   }
 }

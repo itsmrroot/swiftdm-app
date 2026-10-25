@@ -5,6 +5,7 @@
 
 mod add;
 mod app;
+mod autostart;
 mod browser;
 mod help;
 mod helpers;

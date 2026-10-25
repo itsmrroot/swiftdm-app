@@ -30,6 +30,8 @@ struct Cfg {
     at_once: usize,
     /// Never answer a ranged request (but accept the connection).
     silent_ranges: bool,
+    /// The User-Agent of every request the server sees.
+    agents: Arc<std::sync::Mutex<Vec<String>>>,
     /// Ranged requests get headers and 1000 bytes of body, then nothing.
     stall_body: bool,
     /// The size really sent differs from the one announced to ranged probes:
@@ -80,6 +82,10 @@ fn handle(
         reader.read_line(&mut line)?;
         if line.trim().is_empty() {
             break;
+        }
+        if line.to_ascii_lowercase().starts_with("user-agent:") {
+            let value = line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+            cfg.agents.lock().unwrap().push(value);
         }
         if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
             let (a, b) = v.trim().split_once('-').unwrap();
@@ -438,4 +444,67 @@ fn an_unreadable_list_is_kept() {
     let m = Manager::open(Some(file.clone()));
     assert!(m.items().is_empty());
     assert_eq!(std::fs::read(dir.join("downloads.json.corrupt")).unwrap(), b"{ this is not the list");
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A checksum that is given must be met: the right file is done, another is
+/// a failure that says so (and its file stays).
+#[test]
+fn a_checksum_is_checked() {
+    let data = content(400_000, 21);
+    let dir = temp_dir("checksum");
+    let m = Manager::open(None);
+    let fin = |i: &swiftdm::manager::Item| matches!(i.status, Status::Done | Status::Failed);
+
+    let good = serve(data.clone(), Cfg::default());
+    let id = m.add(&good.url, Source::File, Some("good.bin".into()), &dir, None);
+    m.set_expected_hash(id, Some(sha256_hex(&data)));
+    assert!(wait_for(&m, id, 20, fin));
+    assert_eq!(m.item(id).unwrap().status, Status::Done, "{:?}", m.item(id).unwrap().error);
+
+    let bad = serve(data.clone(), Cfg::default());
+    let id = m.add(&bad.url, Source::File, Some("bad.bin".into()), &dir, None);
+    m.set_expected_hash(id, Some("0".repeat(64)));
+    assert!(wait_for(&m, id, 20, fin));
+    let it = m.item(id).unwrap();
+    assert_eq!(it.status, Status::Failed);
+    assert!(it.error.as_deref().is_some_and(|e| e.contains("checksum")), "{:?}", it.error);
+    assert!(it.path.is_some_and(|p| p.exists()), "the file stays to be looked at");
+}
+
+/// An address that expired is replaced and the download goes on.
+#[test]
+fn a_new_link_replaces_an_expired_one() {
+    let data = content(600_000, 22);
+    let down = Arc::new(AtomicBool::new(true));
+    let old = serve(data.clone(), Cfg { fail: down, ..Default::default() });
+    let new = serve(data.clone(), Cfg::default());
+    let dir = temp_dir("newlink");
+    let m = Manager::open(None);
+    let id = m.add(&old.url, Source::File, Some("x.bin".into()), &dir, None);
+    assert!(wait_for(&m, id, 20, |i| i.status == Status::Failed));
+    assert!(m.change_url(id, "not a link").is_err());
+    assert!(m.change_url(id, &new.url).is_ok());
+    assert!(wait_for(&m, id, 20, |i| i.status == Status::Done), "{:?}", m.item(id).unwrap().error);
+    assert_eq!(std::fs::read(m.item(id).unwrap().path.unwrap()).unwrap(), data);
+    // A finished download keeps its link.
+    assert!(m.change_url(id, &new.url).is_err());
+}
+
+/// The user agent of the settings is what servers see.
+#[test]
+fn the_user_agent_of_the_settings_is_sent() {
+    let agents = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = serve(content(300_000, 23), Cfg { agents: agents.clone(), ..Default::default() });
+    let dir = temp_dir("agent");
+    let m = Manager::open(None);
+    m.set_settings(swiftdm::manager::Settings { user_agent: Some("MyBrowser/9.9".into()), ..Default::default() });
+    let id = m.add(&server.url, Source::File, Some("a.bin".into()), &dir, None);
+    assert!(wait_for(&m, id, 20, |i| i.status == Status::Done));
+    let seen = agents.lock().unwrap().clone();
+    assert!(!seen.is_empty() && seen.iter().all(|a| a == "MyBrowser/9.9"), "{seen:?}");
 }

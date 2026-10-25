@@ -82,5 +82,29 @@
   },
   "showHere": {
     "message": "Düğmeyi bu sitede göster"
+  },
+  "onThisPage": {
+    "message": "Bu sayfada"
+  },
+  "downloadAll": {
+    "message": "Hepsini indir"
+  },
+  "kind_image": {
+    "message": "Resimler"
+  },
+  "kind_video": {
+    "message": "Videolar"
+  },
+  "kind_audio": {
+    "message": "Müzik"
+  },
+  "kind_document": {
+    "message": "Belgeler"
+  },
+  "kind_archive": {
+    "message": "Arşivler"
+  },
+  "kind_program": {
+    "message": "Programlar"
   }
 }

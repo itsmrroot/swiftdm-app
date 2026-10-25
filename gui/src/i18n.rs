@@ -238,6 +238,11 @@ pub const ENGINE: &[&str] = &[
     "Adding the cover",
     "Adding details",
     "Finishing",
+    "Checking the file",
+    "the file does not match its checksum: it is damaged or not the one meant",
+    "the file could not be checked: {…}",
+    "a download that runs or is done cannot get another link",
+    "the download is not in the list",
     // manager.rs
     "Trying with your {…} login",
     "Cannot create {…}: {…}",

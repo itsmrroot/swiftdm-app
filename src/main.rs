@@ -98,6 +98,9 @@ struct Get {
     /// Proxy for everything, e.g. socks5://127.0.0.1:9050.
     #[arg(long)]
     proxy: Option<String>,
+    /// The browser name to give servers (some refuse the default one).
+    #[arg(long, value_name = "NAME")]
+    user_agent: Option<String>,
     /// Put files into a folder for their kind (Video, Music, Documents, …).
     #[arg(long)]
     sort: bool,
@@ -219,6 +222,7 @@ fn get(args: Get) -> Result<()> {
         auto_cookies: args.cookies.is_none(),
         proxy: args.proxy.clone(),
         sort_by_kind: args.sort,
+        user_agent: args.user_agent.clone(),
     });
     let mut options = media::Options {
         mode: if args.audio { Mode::Audio } else { Mode::Video },

@@ -72,6 +72,22 @@ impl Filter {
     }
 }
 
+/// What a [`Prompt`] is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptKind {
+    /// A new address for download `id`.
+    ChangeLink(u64),
+    /// A checksum to compare the file of download `id` with.
+    Verify(u64),
+}
+
+struct Prompt {
+    kind: PromptKind,
+    text: String,
+    /// The line has the focus (set once, when the dialog opens).
+    focused: bool,
+}
+
 struct Toast {
     /// Ready to display (`tr`).
     text: String,
@@ -118,6 +134,8 @@ pub struct App {
     /// Last status seen of each item, to notice when one finishes.
     seen: HashMap<u64, Status>,
     confirm_delete: Option<u64>,
+    /// A question with a line to type in ("Change link…", "Verify checksum…").
+    prompt: Option<Prompt>,
     /// The system's CJK font is loaded (once a title needs it).
     cjk_loaded: bool,
     cjk_checked: Instant,
@@ -138,7 +156,8 @@ pub struct App {
     browser_seen: Option<i64>,
     browser_checked: Instant,
     /// SHA-256 of finished files being computed (to copy).
-    hashing: Vec<(String, Job<String>)>,
+    /// File name, the checksum it is to be compared with (none: copy it).
+    hashing: Vec<(String, Option<String>, Job<String>)>,
     /// The window was fitted to the screen.
     fitted: bool,
 }
@@ -208,6 +227,7 @@ impl App {
             toasts: Vec::new(),
             seen,
             confirm_delete: None,
+            prompt: None,
             cjk_loaded: false,
             cjk_checked: Instant::now(),
             focus_url: true,
@@ -233,7 +253,25 @@ impl App {
                 app.page = Page::Settings;
                 app.settings_page.tab = settings::Tab::Browser;
             }
+            Ok("downloads") => {
+                app.page = Page::Settings;
+                app.settings_page.tab = settings::Tab::Downloads;
+            }
             _ => {}
+        }
+        // Development aid: open one of the small dialogs for the first download.
+        #[cfg(debug_assertions)]
+        if let Some(id) = app.manager.items().first().map(|i| i.id) {
+            match std::env::var("SWIFTDM_PROMPT").as_deref() {
+                Ok("change") => {
+                    app.prompt =
+                        Some(Prompt { kind: PromptKind::ChangeLink(id), text: "https://".into(), focused: false })
+                }
+                Ok("verify") => {
+                    app.prompt = Some(Prompt { kind: PromptKind::Verify(id), text: String::new(), focused: false })
+                }
+                _ => {}
+            }
         }
         inbox.attach(ctx);
         // Connects the browser extension (and keeps it connected after an
@@ -301,20 +339,39 @@ impl App {
 
     /// Opens the dialog for `text` (one or more links).
     fn add_links(&mut self, ctx: &egui::Context, text: &str) {
-        let links: Vec<&str> = text.split_whitespace().filter(|l| is_link(l)).collect();
+        let mut links: Vec<String> = Vec::new();
+        let mut too_many = false;
+        for word in text.split_whitespace().filter(|l| is_link(l)) {
+            // "https://site/photo[01-30].jpg" is thirty links.
+            match swiftdm::util::expand_pattern(word) {
+                Ok(Some(many)) => links.extend(many),
+                Ok(None) => links.push(word.to_string()),
+                Err(count) => {
+                    too_many = true;
+                    let detail = i18n::trlf(
+                        "That would be {n} links; at most {max} at once.",
+                        &[("n", &count), ("max", &swiftdm::util::MAX_PATTERN_LINKS)],
+                    );
+                    let amber = Color32::from_rgb(245, 158, 11);
+                    self.toast(icon::WARNING, amber, tr("Too many links in the pattern"), &detail, ToastTarget::None);
+                }
+            }
+        }
         if links.is_empty() {
-            self.toast(
-                icon::WARNING,
-                Color32::from_rgb(245, 158, 11),
-                tr("That is not a link"),
-                text.trim(),
-                ToastTarget::None,
-            );
+            if !too_many {
+                self.toast(
+                    icon::WARNING,
+                    Color32::from_rgb(245, 158, 11),
+                    tr("That is not a link"),
+                    text.trim(),
+                    ToastTarget::None,
+                );
+            }
             return;
         }
         // Their "download the copied link?" offers are answered.
-        self.toasts.retain(|t| !matches!(&t.target, ToastTarget::Link(u) if links.contains(&u.as_str())));
-        let requests = links.into_iter().map(Incoming::link).collect();
+        self.toasts.retain(|t| !matches!(&t.target, ToastTarget::Link(u) if links.iter().any(|l| l == u)));
+        let requests = links.iter().map(|l| Incoming::link(l)).collect();
         self.add_requests(ctx, requests);
     }
 
@@ -325,7 +382,9 @@ impl App {
         for r in requests {
             // Several links at once start without questions; the browser
             // may ask for either.
-            let quick = !r.ask.unwrap_or(self.settings.ask_first && !several);
+            let quick = !r.ask.unwrap_or(self.settings.ask_first && !several)
+                // "Downloads from the browser start at once."
+                || (self.settings.browser_quiet && r.from_browser);
             let before = items
                 .iter()
                 .filter(|i| i.url == r.url && i.status == Status::Done)
@@ -347,7 +406,10 @@ impl App {
     fn start(&mut self, downloads: Vec<add::NewDownload>) {
         let n = downloads.len();
         for d in downloads {
-            self.manager.add_with(&d.url, d.source, d.name, &d.dir, d.thumbnail, d.headers);
+            let id = self.manager.add_with(&d.url, d.source, d.name, &d.dir, d.thumbnail, d.headers);
+            if d.expected_hash.is_some() {
+                self.manager.set_expected_hash(id, d.expected_hash);
+            }
         }
         if n > 0 {
             // Whatever hid it: the status filter, a kind, a search.
@@ -473,7 +535,10 @@ impl App {
             }
             match status {
                 Status::Done => {
-                    self.toast(icon::CHECK_CIRCLE, p.success, tr("Download complete"), &name, ToastTarget::Item(id))
+                    self.toast(icon::CHECK_CIRCLE, p.success, tr("Download complete"), &name, ToastTarget::Item(id));
+                    if let Some(path) = items.iter().find(|i| i.id == id).and_then(|i| i.path.clone()) {
+                        self.run_after(&path);
+                    }
                 }
                 Status::Failed => {
                     let detail = format!("{name}\n{}", list::friendly(&error.unwrap_or_default()));
@@ -490,6 +555,66 @@ impl App {
             if titles.chain(elsewhere).any(text::has_cjk) {
                 theme::install_fonts(ctx, self.language, true);
                 self.cjk_loaded = true;
+            }
+        }
+    }
+
+    /// The program of the settings, for a file that has just been finished
+    /// (a virus scan, a copy to somewhere else, …). `{file}` is replaced by
+    /// its path, or the path is the last argument. No shell is involved.
+    fn run_after(&self, path: &std::path::Path) {
+        let mut parts = swiftdm::util::split_command(&self.settings.after_command);
+        if parts.is_empty() {
+            return;
+        }
+        let file = path.to_string_lossy().into_owned();
+        let named = parts.iter().any(|a| a.contains("{file}"));
+        for a in &mut parts {
+            *a = a.replace("{file}", &file);
+        }
+        if !named {
+            parts.push(file);
+        }
+        let program = parts.remove(0);
+        if let Err(e) = swiftdm::tools::command(&program)
+            .args(&parts)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            log::warn!("the program for finished files ({program}) did not start: {e}");
+        }
+    }
+
+    /// While a file is held over the window: where to let it go.
+    fn drop_hint(&self, ctx: &egui::Context, p: &Palette) {
+        if ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-hint")));
+        let rect = ctx.content_rect().shrink(10.0);
+        painter.rect_filled(rect, CornerRadius::same(16), p.tint(p.accent).gamma_multiply(2.0));
+        painter.rect_stroke(rect, CornerRadius::same(16), Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            tr("Drop a file with links here"),
+            egui::FontId::new(theme::scale::TITLE, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+            p.text,
+        );
+    }
+
+    /// Files dropped on the window: lists of links are imported.
+    fn take_dropped_files(&mut self, ctx: &egui::Context) {
+        let files = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in files {
+            // Only what can hold links; not a movie dropped by mistake.
+            let path = f.path().to_path_buf();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+            if matches!(ext.as_str(), "txt" | "csv" | "list" | "md" | "html" | "htm" | "url" | "json") && path.is_file()
+            {
+                self.import_file(ctx, &path);
             }
         }
     }
@@ -590,11 +715,25 @@ impl App {
             RowAction::CopyHash(id) => {
                 if let Some(path) = item(id).and_then(|i| i.path) {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.hashing.push((name, Job::spawn(ctx, move |progress, stop| sha256(&path, progress, stop))));
+                    self.hashing.push((
+                        name,
+                        None,
+                        Job::spawn(ctx, move |progress, stop| sha256(&path, progress, stop)),
+                    ));
                 }
             }
             RowAction::Remove(id) => self.manager.remove(id, false),
             RowAction::Delete(id) => self.confirm_delete = Some(id),
+            RowAction::ChangeLink(id) => {
+                let text = item(id).map(|i| i.url).unwrap_or_default();
+                self.prompt = Some(Prompt { kind: PromptKind::ChangeLink(id), text, focused: false });
+            }
+            RowAction::Verify(id) => {
+                // A checksum that was copied is taken at once.
+                let text = self.clipboard.as_mut().and_then(|c| c.get_text().ok()).unwrap_or_default();
+                let text = if swiftdm::util::parse_checksum(&text).is_some() { text } else { String::new() };
+                self.prompt = Some(Prompt { kind: PromptKind::Verify(id), text, focused: false });
+            }
         }
     }
 
@@ -615,6 +754,10 @@ impl App {
         let Some(monitor) = monitor.filter(|m| m.x > 100.0 && m.y > 100.0) else { return };
         self.fitted = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+        // Started at sign-in: no window in the way.
+        if std::env::args().any(|a| a == crate::autostart::ARG) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         let zoom = ctx.zoom_factor();
         // In points (the window's size is in logical points, before zoom).
         // About 70% of the screen, between the first size and a large one,
@@ -710,7 +853,12 @@ impl App {
         }) else {
             return;
         };
-        match std::fs::read(&path) {
+        self.import_file(ctx, &path);
+    }
+
+    /// The links in a text, HTML or CSV file are added.
+    fn import_file(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        match std::fs::read(path) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 // Links inside quotes or brackets (HTML) and lists (CSV)
@@ -740,9 +888,9 @@ impl App {
 
     fn poll_hashing(&mut self, ctx: &egui::Context, p: &Palette) {
         let mut done = Vec::new();
-        self.hashing.retain(|(name, job)| match job.poll() {
+        self.hashing.retain(|(name, want, job)| match job.poll() {
             Some(r) => {
-                done.push((name.clone(), r));
+                done.push((name.clone(), want.clone(), r));
                 false
             }
             None => true,
@@ -750,15 +898,29 @@ impl App {
         if !self.hashing.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
-        for (name, r) in done {
-            match r {
-                Ok(hash) => {
+        for (name, want, r) in done {
+            match (r, want) {
+                // A checksum to compare with: it matches or it does not.
+                (Ok(got), Some(want)) if got == want => {
+                    self.toast(icon::SEAL_CHECK, p.success, tr("The checksum matches"), &name, ToastTarget::None)
+                }
+                (Ok(got), Some(_)) => {
+                    let detail = format!("{name}\n{got}");
+                    self.toast(
+                        icon::SEAL_WARNING,
+                        p.danger,
+                        tr("The checksum does not match"),
+                        &detail,
+                        ToastTarget::None,
+                    )
+                }
+                (Ok(hash), None) => {
                     ctx.copy_text(hash.clone());
                     self.clip_last = hash.clone();
                     let detail = format!("{name}\n{hash}");
                     self.toast(icon::FINGERPRINT, p.success, tr("SHA-256 copied"), &detail, ToastTarget::None);
                 }
-                Err(e) => {
+                (Err(e), _) => {
                     let detail = format!("{name}\n{e:#}");
                     self.toast(icon::WARNING, p.danger, tr("The file could not be read"), &detail, ToastTarget::None)
                 }
@@ -766,7 +928,82 @@ impl App {
         }
     }
 
-    /// The bar at the top: the name, and the settings changed most often.
+    /// The small dialog with one line to type in.
+    fn prompt_dialog(&mut self, ctx: &egui::Context, p: &Palette) {
+        let Some(prompt) = &mut self.prompt else { return };
+        let (title, hint, ok) = match prompt.kind {
+            PromptKind::ChangeLink(_) => (
+                tr("Change the link"),
+                trl("Paste the new address of the file. What was downloaded so far is kept."),
+                tr("Change"),
+            ),
+            PromptKind::Verify(_) => (
+                tr("Verify the checksum"),
+                trl("Paste the checksum the site gives for this file (SHA-256 or SHA-512)."),
+                tr("Check"),
+            ),
+        };
+        let mut result = None;
+        let modal = egui::Modal::new(egui::Id::new("prompt")).show(ctx, |ui| {
+            ui.set_width(520.0_f32.min(ctx.content_rect().width() - 48.0));
+            ui.label(theme::semibold(title, theme::scale::LEAD));
+            ui.add_space(4.0);
+            theme::paragraph(ui, hint, theme::scale::BODY, p.weak);
+            ui.add_space(8.0);
+            let line = ui.add(egui::TextEdit::singleline(&mut prompt.text).desired_width(ui.available_width()));
+            if !prompt.focused {
+                line.request_focus();
+                prompt.focused = true;
+            }
+            let enter = line.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let usable = match prompt.kind {
+                PromptKind::ChangeLink(_) => is_link(prompt.text.trim()),
+                PromptKind::Verify(_) => swiftdm::util::parse_checksum(&prompt.text).is_some(),
+            };
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if (theme::primary_button(ui, p, &format!("  {ok}  "), usable).clicked() || enter) && usable {
+                    result = Some(true);
+                }
+                if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                    result = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            result = Some(false);
+        }
+        let Some(go) = result else { return };
+        let Some(prompt) = self.prompt.take() else { return };
+        if !go {
+            return;
+        }
+        match prompt.kind {
+            PromptKind::ChangeLink(id) => match self.manager.change_url(id, &prompt.text) {
+                Ok(()) => self.toast(icon::LINK_SIMPLE, p.success, tr("The link was changed"), "", ToastTarget::None),
+                Err(e) => self.toast(
+                    icon::WARNING,
+                    p.danger,
+                    tr("The link was not changed"),
+                    &i18n::engine(e),
+                    ToastTarget::None,
+                ),
+            },
+            PromptKind::Verify(id) => {
+                let Some(want) = swiftdm::util::parse_checksum(&prompt.text) else { return };
+                if let Some(path) = self.manager.item(id).and_then(|i| i.path) {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let w = want.clone();
+                    self.hashing.push((
+                        name,
+                        Some(want),
+                        Job::spawn(ctx, move |_progress, _stop| Ok(swiftdm::util::hash_file(&path, &w)?)),
+                    ));
+                }
+            }
+        }
+    }
+
     fn header(&mut self, ui: &mut Ui, p: &Palette) {
         // Narrow (a small window, a large zoom): the chips are symbols only
         // (their tooltips say the rest) and the name goes.
@@ -1500,6 +1737,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.poll_hashing(ctx, &p);
+        self.take_dropped_files(ctx);
         if self.manager.busy() || self.helpers.busy() || self.adds.iter().any(|d| d.looking()) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -1624,11 +1862,13 @@ impl eframe::App for App {
             });
         self.poll_adds(&ctx, &p);
         self.delete_dialog(&ctx, &p);
+        self.prompt_dialog(&ctx, &p);
         self.updater.dialog(&ctx, &p, self.manager.busy());
         let failed = items.iter().filter(|i| i.status == Status::Failed).count();
         let due = self.power.dialog(&ctx, &p, failed);
         self.on_due(&ctx, due);
         self.toasts_ui(&ctx, &p);
+        self.drop_hint(&ctx, &p);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

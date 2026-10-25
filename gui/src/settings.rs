@@ -66,6 +66,14 @@ pub struct Settings {
     pub check_updates: bool,
     /// The welcome card was closed.
     pub welcomed: bool,
+    // More
+    /// The browser name to give servers (empty: SwiftDM's own).
+    pub user_agent: String,
+    /// Downloads caught from the browser start at once, without the window
+    /// of choices.
+    pub browser_quiet: bool,
+    /// A program to run for each finished file: `{file}` is its path.
+    pub after_command: String,
 }
 
 impl Default for Settings {
@@ -100,6 +108,9 @@ impl Default for Settings {
             keep_ytdlp_updated: true,
             check_updates: true,
             welcomed: false,
+            user_agent: String::new(),
+            browser_quiet: false,
+            after_command: String::new(),
         }
     }
 }
@@ -115,6 +126,7 @@ impl Settings {
             auto_cookies: self.auto_cookies,
             proxy: Some(self.proxy.trim().to_string()).filter(|p| !p.is_empty()),
             sort_by_kind: self.sort_by_kind,
+            user_agent: Some(self.user_agent.trim().to_string()).filter(|u| !u.is_empty()),
         }
     }
 
@@ -260,6 +272,9 @@ pub struct Page {
     installed: Option<Vec<Browser>>,
     /// Result of the last action on the Browser tab.
     message: Option<(bool, String)>,
+    /// Whether SwiftDM starts at sign-in (looked up once), and what went wrong.
+    autostart: Option<bool>,
+    autostart_error: Option<String>,
 }
 
 /// Everything the Settings page changes besides the settings themselves.
@@ -307,10 +322,10 @@ pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Con
         theme::card(ui, p, |ui| {
             ui.set_width(ui.available_width());
             match page.tab {
-                Tab::General => general(ui, p, s, cx.updater),
+                Tab::General => general(ui, p, s, page, cx.updater),
                 Tab::Downloads => downloads(ui, p, s),
                 Tab::Videos => videos(ui, p, s),
-                Tab::Browser => browser(ui, p, page, cx.browser_seen),
+                Tab::Browser => browser(ui, p, s, page, cx.browser_seen),
                 Tab::Schedule => schedule(ui, p, s, page, cx.after_done),
                 Tab::Logins => logins(ui, p, s),
                 Tab::Helpers => {
@@ -330,7 +345,7 @@ pub fn page(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, cx: Con
     });
 }
 
-fn general(ui: &mut Ui, p: &Palette, s: &mut Settings, updater: &mut Updater) {
+fn general(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, updater: &mut Updater) {
     row(ui, p, tr("Language"), "", |ui| {
         let current = s.language.label();
         egui::ComboBox::from_id_salt("language").selected_text(current.as_ref()).show_ui(ui, |ui| {
@@ -374,6 +389,24 @@ fn general(ui: &mut Ui, p: &Palette, s: &mut Settings, updater: &mut Updater) {
     });
     row(ui, p, tr("When a download finishes"), "", |ui| {
         ui.checkbox(&mut s.notify, tr("Show a notification of the system"));
+    });
+    row(ui, p, tr("Startup"), "", |ui| {
+        ui.vertical(|ui| {
+            let on = *page.autostart.get_or_insert_with(crate::autostart::is_on);
+            let mut want = on;
+            if ui.checkbox(&mut want, tr("Start SwiftDM when I sign in")).changed() {
+                match crate::autostart::set(want) {
+                    Ok(()) => {
+                        page.autostart = Some(want);
+                        page.autostart_error = None;
+                    }
+                    Err(e) => page.autostart_error = Some(crate::i18n::engine(&format!("{e:#}"))),
+                }
+            }
+            if let Some(e) = &page.autostart_error {
+                ui.label(crate::text::rich(e).color(p.danger).size(theme::scale::CAPTION));
+            }
+        });
     });
     row(ui, p, tr("Updates"), "", |ui| {
         ui.vertical(|ui| {
@@ -426,6 +459,28 @@ fn downloads(ui: &mut Ui, p: &Palette, s: &mut Settings) {
     row(ui, p, tr("Proxy"), trl("For networks that need one, or for privacy. Empty: none."), |ui| {
         ui.add(egui::TextEdit::singleline(&mut s.proxy).hint_text("socks5://127.0.0.1:9050").desired_width(260.0));
     });
+    row(
+        ui,
+        p,
+        tr("After each download"),
+        trl("A program to run for each finished file, for example a virus scan. {file} is the file's path."),
+        |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut s.after_command)
+                    .hint_text(r#""C:\Tools\scan.exe" {file}"#)
+                    .desired_width(300.0),
+            );
+        },
+    );
+    row(
+        ui,
+        p,
+        tr("Browser name"),
+        trl("What servers are told SwiftDM is (the user agent). Empty: SwiftDM's own."),
+        |ui| {
+            ui.add(egui::TextEdit::singleline(&mut s.user_agent).hint_text("Mozilla/5.0 …").desired_width(300.0));
+        },
+    );
 }
 
 fn videos(ui: &mut Ui, p: &Palette, s: &mut Settings) {
@@ -467,7 +522,7 @@ fn videos(ui: &mut Ui, p: &Palette, s: &mut Settings) {
     });
 }
 
-fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
+fn browser(ui: &mut Ui, p: &Palette, s: &mut Settings, page: &mut Page, seen: Option<i64>) {
     theme::paragraph(
         ui,
         trl(
@@ -477,6 +532,9 @@ fn browser(ui: &mut Ui, p: &Palette, page: &mut Page, seen: Option<i64>) {
         p.text,
     );
     ui.add_space(6.0);
+    row(ui, p, tr("Downloads from the browser"), "", |ui| {
+        ui.checkbox(&mut s.browser_quiet, tr("Start them at once, without the window of choices"));
+    });
     match seen {
         Some(t) => {
             let when = crate::list::date(t);
