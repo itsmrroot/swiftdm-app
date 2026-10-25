@@ -300,14 +300,58 @@ pub fn latest_ytdlp() -> Result<String> {
     Ok(github_release("yt-dlp/yt-dlp", None)?.tag_name)
 }
 
-/// The newest version of `tool` as `--version` prints it, when it can be
-/// told without downloading (FFmpeg's cannot: `None`).
-pub fn latest_version(tool: Tool) -> Result<Option<String>> {
+/// What looking for an update found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Check {
+    Current,
+    /// A newer one exists: its version, when it can be told.
+    Newer(Option<String>),
+}
+
+/// Whether a newer version of `tool` than `installed` (what `--version`
+/// printed) exists, without downloading it.
+pub fn check_update(tool: Tool, installed: &str) -> Result<Check> {
+    let same = |latest: &str| latest.trim_start_matches('v') == installed.trim_start_matches('v');
     Ok(match tool {
-        Tool::YtDlp => Some(latest_ytdlp()?),
-        Tool::Deno => Some(github_release("denoland/deno", None)?.tag_name.trim_start_matches('v').to_string()),
-        Tool::Ffmpeg => None,
+        Tool::YtDlp => {
+            let latest = latest_ytdlp()?;
+            if same(&latest) { Check::Current } else { Check::Newer(Some(latest)) }
+        }
+        Tool::Deno => {
+            let latest = github_release("denoland/deno", None)?.tag_name;
+            if same(&latest) { Check::Current } else { Check::Newer(Some(latest.trim_start_matches('v').to_string())) }
+        }
+        // FFmpeg's builds have no version to compare: the build that was
+        // installed is remembered (a copy from before that is replaced once).
+        Tool::Ffmpeg => {
+            let marked = std::fs::read_to_string(ffmpeg_marker()).ok();
+            let latest = ffmpeg_build()?;
+            if marked.is_some_and(|m| m.trim() == latest) { Check::Current } else { Check::Newer(None) }
+        }
     })
+}
+
+fn ffmpeg_marker() -> PathBuf {
+    tools_dir().join("ffmpeg.build")
+}
+
+/// Names the newest FFmpeg build: the address of the macOS build, or the
+/// checksum of the archive made for yt-dlp.
+fn ffmpeg_build() -> Result<String> {
+    if cfg!(target_os = "macos") {
+        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" };
+        return resolve(&format!("https://ffmpeg.martin-riedl.de/redirect/latest/macos/{arch}/release/ffmpeg.zip"));
+    }
+    let rel = github_release("yt-dlp/FFmpeg-Builds", Some("latest"))?;
+    let arm = cfg!(target_arch = "aarch64");
+    let name = match (cfg!(windows), arm) {
+        (true, true) => "ffmpeg-master-latest-winarm64-gpl.zip",
+        (true, false) => "ffmpeg-master-latest-win64-gpl.zip",
+        (false, true) => "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+        (false, false) => "ffmpeg-master-latest-linux64-gpl.tar.xz",
+    };
+    let a = asset(&rel, name)?;
+    Ok(digest(&a).map(str::to_string).unwrap_or_else(|| format!("{}-{}", a.name, a.size)))
 }
 
 /// Progress of an installation: bytes so far and the total, if known.
@@ -426,7 +470,15 @@ fn install_into(tool: Tool, work: &Path, progress: OnProgress, stop: &AtomicBool
             unzip_one(&zip, tool.exe(), &tmp)?;
             put_in_place(&tmp, &tool.managed_path())
         }
-        Tool::Ffmpeg => install_ffmpeg(work, progress, stop),
+        Tool::Ffmpeg => {
+            // Looked up first: what is installed is what this names.
+            let build = ffmpeg_build().ok();
+            install_ffmpeg(work, progress, stop)?;
+            if let Some(b) = build {
+                let _ = std::fs::write(ffmpeg_marker(), b);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -495,6 +547,7 @@ fn install_ffmpeg(work: &Path, progress: OnProgress, stop: &AtomicBool) -> Resul
 pub fn uninstall(tool: Tool) -> Result<()> {
     let mut files = vec![tool.managed_path()];
     if tool == Tool::Ffmpeg {
+        files.push(ffmpeg_marker());
         files.push(tools_dir().join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }));
     }
     for f in files {

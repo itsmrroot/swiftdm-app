@@ -90,6 +90,7 @@ pub const ARABIC: &[(&str, &str)] = &[
     ("Installing {tool} — {size}", "جارٍ تثبيت {tool} — {size}"),
     ("{n} more after this", "{n} أخرى بعد هذا"),
     ("{tool} is up to date ({version}).", "{tool} محدّث ({version})."),
+    ("{tool} is up to date.", "{tool} محدّث."),
     ("{tool} could not be checked for updates: {error}", "تعذّر البحث عن تحديث لـ {tool}: {error}"),
     (
         "{tool} updated from {old} to {new}. No restart is needed.",
@@ -744,6 +745,7 @@ pub const GERMAN: &[(&str, &str)] = &[
     ("Installing {tool} — {size}", "{tool} wird installiert — {size}"),
     ("{n} more after this", "danach noch {n}"),
     ("{tool} is up to date ({version}).", "{tool} ist aktuell ({version})."),
+    ("{tool} is up to date.", "{tool} ist aktuell."),
     (
         "{tool} could not be checked for updates: {error}",
         "Die Suche nach einem Update für {tool} ist fehlgeschlagen: {error}",
@@ -1437,6 +1439,7 @@ pub const TURKISH: &[(&str, &str)] = &[
     ("Installing {tool} — {size}", "{tool} yükleniyor — {size}"),
     ("{n} more after this", "bundan sonra {n} tane daha"),
     ("{tool} is up to date ({version}).", "{tool} güncel ({version})."),
+    ("{tool} is up to date.", "{tool} güncel."),
     ("{tool} could not be checked for updates: {error}", "{tool} için güncelleme denetlenemedi: {error}"),
     (
         "{tool} updated from {old} to {new}. No restart is needed.",

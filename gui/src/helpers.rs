@@ -26,7 +26,7 @@ pub struct Helpers {
     queue: VecDeque<Tool>,
     update_check: Option<Job<bool>>,
     /// "Update" was clicked: looking for a newer version first.
-    checking: Option<(Tool, Job<Option<String>>)>,
+    checking: Option<(Tool, String, Job<tools::Check>)>,
     /// An update the person asked for that is being installed: the tool, the
     /// version it had and the one it gets (when known).
     updating: Option<(Tool, String, Option<String>)>,
@@ -102,26 +102,19 @@ impl Helpers {
                 Err(e) => log::info!("yt-dlp update check failed: {e:#}"),
             }
         }
-        if let Some((tool, job)) = &self.checking
+        if let Some((tool, installed, job)) = &self.checking
             && let Some(r) = job.poll()
         {
-            let tool = *tool;
+            let (tool, installed) = (*tool, installed.clone());
             self.checking = None;
-            let installed = self
-                .status
-                .iter()
-                .flatten()
-                .find(|s| s.tool == tool)
-                .and_then(|s| s.version.clone())
-                .unwrap_or_default();
             match r {
-                Ok(Some(latest)) if latest.trim_start_matches('v') == installed.trim_start_matches('v') => {
-                    self.notice = Some(trlf(
-                        "{tool} is up to date ({version}).",
-                        &[("tool", &tool.name()), ("version", &installed)],
-                    ));
+                Ok(tools::Check::Current) => {
+                    self.notice = Some(match installed.as_str() {
+                        "" => trlf("{tool} is up to date.", &[("tool", &tool.name())]),
+                        v => trlf("{tool} is up to date ({version}).", &[("tool", &tool.name()), ("version", &v)]),
+                    });
                 }
-                Ok(latest) => {
+                Ok(tools::Check::Newer(latest)) => {
                     self.updating = Some((tool, installed, latest));
                     self.install(ctx, &[tool]);
                 }
@@ -204,7 +197,10 @@ impl Helpers {
         }
         self.error = None;
         self.notice = None;
-        self.checking = Some((tool, Job::spawn(ctx, move |_, _| tools::latest_version(tool))));
+        let installed =
+            self.status.iter().flatten().find(|s| s.tool == tool).and_then(|s| s.version.clone()).unwrap_or_default();
+        let known = installed.clone();
+        self.checking = Some((tool, installed, Job::spawn(ctx, move |_, _| tools::check_update(tool, &known))));
     }
 
     pub fn cancel(&mut self) {
@@ -335,7 +331,7 @@ impl Helpers {
                     }
                     let busy = self.installing.as_ref().is_some_and(|(t, _)| *t == s.tool)
                         || self.queue.contains(&s.tool)
-                        || self.checking.as_ref().is_some_and(|(t, _)| *t == s.tool);
+                        || self.checking.as_ref().is_some_and(|(t, ..)| *t == s.tool);
                     if busy {
                         ui.spinner();
                     } else if s.managed {
