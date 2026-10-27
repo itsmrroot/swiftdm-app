@@ -31,22 +31,19 @@ use crate::theme::{self, Palette};
 
 /// The public repository the releases are published to (the code itself
 /// is private).
-/// Written by the Windows update when the setup did not succeed.
-#[cfg(windows)]
-const FAILED: &str = "update-failed.txt";
+/// Written when an update is handed to its installer, and removed by the
+/// next start: if that start is not the new version, the update failed.
+const PENDING: &str = "update-pending.txt";
 
-/// What a failed update left behind (the setup's exit code), once.
-#[cfg(windows)]
-pub fn take_failure() -> Option<String> {
-    let path = swiftdm::paths::data_dir().join(FAILED);
-    let code = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    Some(code.trim().to_string())
+fn pending_path() -> PathBuf {
+    swiftdm::paths::data_dir().join(PENDING)
 }
 
-#[cfg(not(windows))]
+/// The version an update was started for but did not become, once.
 pub fn take_failure() -> Option<String> {
-    None
+    let version = std::fs::read_to_string(pending_path()).ok()?.trim().to_string();
+    let _ = std::fs::remove_file(pending_path());
+    (is_newer(&version, current())).then_some(version)
 }
 
 pub const REPO: &str = "https://github.com/itsmrroot/SwiftDM-release";
@@ -353,40 +350,21 @@ pub fn install(file: &Path, sha256: Option<&str>, relaunch: bool) -> Result<()> 
         #[cfg(windows)]
         Kind::Setup => {
             use std::os::windows::process::CommandExt;
-            // The silent setup ends a running app at once; this one first
-            // pauses its downloads and saves the list (`on_exit`). So the
-            // setup starts only once this process has exited, from a hidden
-            // waiter that outlives it.
+            // The setup runs by itself, detached, and ends the running app
+            // (this one saves its list when it closes, right after this).
             const DETACHED_PROCESS: u32 = 0x0000_0008;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let quote = |p: &Path| p.display().to_string().replace('\'', "''");
             let exe = std::env::current_exe().context("the program's own place is unknown")?;
             let folder = exe.parent().context("unexpected app location")?;
-            let marker = swiftdm::paths::data_dir().join(FAILED);
-            // The setup installs into the folder this app runs from (not
-            // where the registry says, which can be another one), and its
-            // end is waited for: when it fails, the old version starts again
-            // and the next start says so. `/D=` must be the last argument.
-            let script = format!(
-                "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-                 $p = Start-Process -FilePath '{setup}' -ArgumentList '/S',{relaunch}'/D={folder}' -PassThru -ErrorAction SilentlyContinue; \
-                 if ($p) {{ $p.WaitForExit() }}; \
-                 if (-not $p -or $p.ExitCode -ne 0) {{ \
-                   $code = if ($p) {{ $p.ExitCode }} else {{ 'not started' }}; \
-                   Set-Content -LiteralPath '{marker}' -Value $code; \
-                   {restart} }}",
-                pid = std::process::id(),
-                relaunch = if relaunch { "'/R'," } else { "" },
-                restart = if relaunch { format!("Start-Process -FilePath '{}'", quote(&exe)) } else { String::new() },
-                setup = quote(file),
-                folder = quote(folder),
-                marker = quote(&marker),
-            );
-            std::process::Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-                .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-                .spawn()
-                .context("could not start the setup")?;
+            let mut cmd = std::process::Command::new(file);
+            cmd.arg("/S");
+            if relaunch {
+                cmd.arg("/R");
+            }
+            // Into the folder this app runs from (not where the registry says,
+            // which can be another one). `/D=` must be the last argument and
+            // is not quoted.
+            cmd.raw_arg(format!("/D={}", folder.display()));
+            cmd.creation_flags(DETACHED_PROCESS).spawn().context("could not start the setup")?;
             Ok(())
         }
         #[cfg(target_os = "macos")]
@@ -559,14 +537,27 @@ impl Updater {
         false
     }
 
+    /// Hands the downloaded update to its installer.
+    fn start_install(&self, relaunch: bool) -> Result<()> {
+        let (file, sha) = self.ready.as_ref().context("no update was downloaded")?;
+        if let Some(r) = &self.release {
+            let _ = std::fs::write(pending_path(), &r.version);
+        }
+        let result = install(file, sha.as_deref(), relaunch);
+        if result.is_err() {
+            let _ = std::fs::remove_file(pending_path());
+        }
+        result
+    }
+
     /// Called when the app closes: an update that was to be installed then.
     pub fn install_on_close(&mut self) {
         if self.on_close
-            && let Some((file, sha)) = self.ready.take()
-            && let Err(e) = install(&file, sha.as_deref(), false)
+            && let Err(e) = self.start_install(false)
         {
             log::warn!("the update could not be installed: {e:#}");
         }
+        self.ready = None;
     }
 
     /// The version a newer release has, once one was found.
@@ -705,10 +696,8 @@ impl Updater {
                 }
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::primary_button(ui, p, &format!("  {}  ", tr("Restart now")), true).clicked()
-                        && let Some((file, sha)) = &self.ready
-                    {
-                        match install(file, sha.as_deref(), true) {
+                    if theme::primary_button(ui, p, &format!("  {}  ", tr("Restart now")), true).clicked() {
+                        match self.start_install(true) {
                             Ok(()) => {
                                 self.ready = None;
                                 self.close_now = true;

@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.2
+
+- **Windows update:** the setup is now started directly, the same way Network Manager does, instead of through a hidden PowerShell. If the update still does not install, the next start says which version was not installed.
+
 ## 1.10.1
 
 - **"The login of the chosen browser could not be read"** no longer stops a download: when that browser's login cannot be read (on Windows, newer browsers lock or encrypt it), the link is tried without it. Videos that need a login still say so.

@@ -290,10 +290,10 @@ impl App {
             crate::browser::refresh_extension_files();
         });
         app.inbox = Some(inbox);
-        if let Some(code) = update_failed {
+        if let Some(version) = update_failed {
             let detail = i18n::trlf(
-                "The setup ended with: {code}. Download it from the releases page and run it.",
-                &[("code", &code)],
+                "The update to version {version} was not installed. Download it from the releases page and run it.",
+                &[("version", &version)],
             );
             app.toast(
                 icon::WARNING,
@@ -1931,10 +1931,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // An update chosen to be installed when the app closes.
-        self.updater.install_on_close();
         // Running downloads continue at the next start.
         self.manager.shutdown();
+        // An update chosen to be installed when the app closes.
+        self.updater.install_on_close();
     }
 }
 
