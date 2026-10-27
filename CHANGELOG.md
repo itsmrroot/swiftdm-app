@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.9.1
+
+- **Windows update:** the setup now installs into the folder the app runs from, and its result is checked. If it does not succeed, the old version starts again and says so (with the setup's exit code), instead of silently staying on the old version.
+
 ## 1.9.0
 
 - **New license: PolyForm Noncommercial 1.0.0.** SwiftDM stays free to download and use and its code stays public, but selling it or using it in a commercial product needs written permission. Versions up to 1.8.3 were released under the MIT license and stay under it.

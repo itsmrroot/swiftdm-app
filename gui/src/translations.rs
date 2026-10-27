@@ -399,6 +399,11 @@ pub const ARABIC: &[(&str, &str)] = &[
     ("unexpected app location", "موقع غير متوقع للتطبيق"),
     ("The update could not be installed: {error}", "تعذّر تثبيت التحديث: {error}"),
     ("{n} links", "{n} روابط"),
+    ("The update could not be installed", "تعذّر تثبيت التحديث"),
+    (
+        "The setup ended with: {code}. Download it from the releases page and run it.",
+        "انتهى المثبّت بالنتيجة: {code}. نزّله من صفحة الإصدارات وشغّله.",
+    ),
     ("It is here:", "موجود هنا:"),
     ("Copy", "نسخ"),
     (
@@ -1081,6 +1086,11 @@ pub const GERMAN: &[(&str, &str)] = &[
     ("unexpected app location", "unerwarteter Ort der App"),
     ("The update could not be installed: {error}", "Das Update konnte nicht installiert werden: {error}"),
     ("{n} links", "{n} Links"),
+    ("The update could not be installed", "Das Update konnte nicht installiert werden"),
+    (
+        "The setup ended with: {code}. Download it from the releases page and run it.",
+        "Das Setup endete mit: {code}. Laden Sie es von der Release-Seite und führen Sie es aus.",
+    ),
     ("It is here:", "Er liegt hier:"),
     ("Copy", "Kopieren"),
     (
@@ -1763,6 +1773,11 @@ pub const TURKISH: &[(&str, &str)] = &[
     ("unexpected app location", "uygulamanın konumu beklenmedik"),
     ("The update could not be installed: {error}", "Güncelleme yüklenemedi: {error}"),
     ("{n} links", "{n} bağlantı"),
+    ("The update could not be installed", "Güncelleme yüklenemedi"),
+    (
+        "The setup ended with: {code}. Download it from the releases page and run it.",
+        "Kurulum şununla bitti: {code}. Sürüm sayfasından indirip çalıştırın.",
+    ),
     ("It is here:", "Burada:"),
     ("Copy", "Kopyala"),
     (

@@ -31,6 +31,24 @@ use crate::theme::{self, Palette};
 
 /// The public repository the releases are published to (the code itself
 /// is private).
+/// Written by the Windows update when the setup did not succeed.
+#[cfg(windows)]
+const FAILED: &str = "update-failed.txt";
+
+/// What a failed update left behind (the setup's exit code), once.
+#[cfg(windows)]
+pub fn take_failure() -> Option<String> {
+    let path = swiftdm::paths::data_dir().join(FAILED);
+    let code = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    Some(code.trim().to_string())
+}
+
+#[cfg(not(windows))]
+pub fn take_failure() -> Option<String> {
+    None
+}
+
 pub const REPO: &str = "https://github.com/itsmrroot/SwiftDM-release";
 const LATEST: &str = "https://api.github.com/repos/itsmrroot/SwiftDM-release/releases/latest";
 
@@ -341,10 +359,27 @@ pub fn install(file: &Path, sha256: Option<&str>) -> Result<()> {
             // waiter that outlives it.
             const DETACHED_PROCESS: u32 = 0x0000_0008;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let setup = file.display().to_string().replace('\'', "''");
+            let quote = |p: &Path| p.display().to_string().replace('\'', "''");
+            let exe = std::env::current_exe().context("the program's own place is unknown")?;
+            let folder = exe.parent().context("unexpected app location")?;
+            let marker = swiftdm::paths::data_dir().join(FAILED);
+            // The setup installs into the folder this app runs from (not
+            // where the registry says, which can be another one), and its
+            // end is waited for: when it fails, the old version starts again
+            // and the next start says so. `/D=` must be the last argument.
             let script = format!(
-                "Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process -FilePath '{setup}' -ArgumentList '/S','/R'",
-                std::process::id()
+                "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
+                 $p = Start-Process -FilePath '{setup}' -ArgumentList '/S','/R','/D={folder}' -PassThru -ErrorAction SilentlyContinue; \
+                 if ($p) {{ $p.WaitForExit() }}; \
+                 if (-not $p -or $p.ExitCode -ne 0) {{ \
+                   $code = if ($p) {{ $p.ExitCode }} else {{ 'not started' }}; \
+                   Set-Content -LiteralPath '{marker}' -Value $code; \
+                   Start-Process -FilePath '{exe}' }}",
+                pid = std::process::id(),
+                setup = quote(file),
+                folder = quote(folder),
+                marker = quote(&marker),
+                exe = quote(&exe),
             );
             std::process::Command::new("powershell")
                 .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])

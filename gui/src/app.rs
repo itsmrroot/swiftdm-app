@@ -204,6 +204,7 @@ impl App {
         if settings.check_updates {
             updater.check(ctx, false);
         }
+        let update_failed = update::take_failure();
         let mut app = Self {
             helpers: Helpers::new(ctx, settings.keep_ytdlp_updated),
             settings,
@@ -289,6 +290,19 @@ impl App {
             crate::browser::refresh_extension_files();
         });
         app.inbox = Some(inbox);
+        if let Some(code) = update_failed {
+            let detail = i18n::trlf(
+                "The setup ended with: {code}. Download it from the releases page and run it.",
+                &[("code", &code)],
+            );
+            app.toast(
+                icon::WARNING,
+                Color32::from_rgb(220, 38, 38),
+                tr("The update could not be installed"),
+                &detail,
+                ToastTarget::None,
+            );
+        }
         if !links.is_empty() {
             app.add_links(ctx, &links.join(" "));
         }
