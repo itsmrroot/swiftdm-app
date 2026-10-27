@@ -126,7 +126,13 @@ fn look(
     if s.auto_cookies && s.cookies_from.is_none() && by_site {
         browsers.extend(manager::browsers().iter().map(|b| Some(*b)));
     }
+    // The chosen browser's login may be unreadable (a locked file, a newer
+    // browser's encryption): then the link is tried without it.
+    if s.cookies_from.is_some() {
+        browsers.push(None);
+    }
     let mut last = None;
+    let mut cookie_error = None;
     for cookies in browsers {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -137,7 +143,9 @@ fn look(
                 last.get_or_insert(e);
             }
             // This browser's login cannot be read: the next one may do.
-            Err(e) if e.kind == ErrorKind::Cookies && last.is_some() => {}
+            Err(e) if e.kind == ErrorKind::Cookies => {
+                cookie_error.get_or_insert(e);
+            }
             Err(e) if e.kind == ErrorKind::Unsupported => {
                 // A page without a video: perhaps still worth saving.
                 return http::probe_with(url, net).map(Looked::File).map_err(|_| LookError {
@@ -153,7 +161,8 @@ fn look(
             Err(e) => return Err(LookError { kind: e.kind, message: e.message }),
         }
     }
-    let e = last.unwrap_or(media::MediaError { kind: ErrorKind::Other, message: trl("Cancelled").into() });
+    let e =
+        last.or(cookie_error).unwrap_or(media::MediaError { kind: ErrorKind::Other, message: trl("Cancelled").into() });
     Err(LookError { kind: e.kind, message: e.message })
 }
 

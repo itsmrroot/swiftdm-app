@@ -860,6 +860,8 @@ impl Manager {
         fallbacks.reverse();
         let report = Progress::new(self.inner.clone(), id);
         let mut site_error: Option<media::MediaError> = None;
+        // The chosen browser's login could not be read: once without it.
+        let mut tried_plain = false;
         let kind = if options.mode == Mode::Audio { FileKind::Audio } else { FileKind::Video };
         let dir = match &item.work_dir {
             Some(d) => d.clone(),
@@ -918,6 +920,11 @@ impl Manager {
                     let browser = fallbacks.pop().expect("not empty");
                     options.cookies_from = Some(browser.to_string());
                     self.inner.update(id, |i| i.stage = Some(format!("Trying with your {browser} login")));
+                }
+                Err(e) if e.kind == ErrorKind::Cookies && options.cookies_from.is_some() && !tried_plain => {
+                    log::warn!("download {id}: {}; trying without a login", e.message);
+                    tried_plain = true;
+                    options.cookies_from = None;
                 }
                 // Out of browsers: what the site said matters, not that
                 // the last browser's login was unreadable.

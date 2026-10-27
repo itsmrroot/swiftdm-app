@@ -1,6 +1,6 @@
 [package]
 name = "swiftdm-gui"
-version = "1.10.0"
+version = "1.10.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Desktop app for SwiftDM"
@@ -24,7 +24,7 @@ sha2 = "0.11.0"
 ron = "0.12.2"
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 sys-locale = "0.3.2"
-swiftdm = { version = "1.10.0", path = ".." }
+swiftdm = { version = "1.10.1", path = ".." }
 unicode-bidi = "0.3.18"
 ureq = "3.4.2"
 
@@ -55,7 +55,8 @@ authors = ["Bashar Salmo"]
 publisher = "Bashar Salmo"
 copyright = "© 2026 Bashar Salmo. Powered by Bashar Salmo."
 category = "Utility"
-license-file = "../LICENSE"
+# The installers show this one: LICENSE without the Markdown marks.
+license-file = "assets/LICENSE.txt"
 # One per system: macOS uses the .icns, Windows the .ico, Linux the PNG.
 icons = ["assets/swiftdm.icns", "assets/swiftdm.ico", "assets/icon.png"]
 # The command line comes along for scripting and keyboard use.

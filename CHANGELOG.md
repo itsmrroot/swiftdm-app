@@ -3,6 +3,11 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.1
+
+- **"The login of the chosen browser could not be read"** no longer stops a download: when that browser's login cannot be read (on Windows, newer browsers lock or encrypt it), the link is tried without it. Videos that need a login still say so.
+- The license shown by the Windows setup and the macOS disk image is plain text, without the "#" marks.
+
 ## 1.10.0
 
 - **Name your file:** a "File name" field in the New download window for videos and music. Leave it empty to keep the title. A name that is taken gets (2), (3), ….
