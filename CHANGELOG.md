@@ -3,6 +3,14 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.0
+
+- **Name your file:** a "File name" field in the New download window for videos and music. Leave it empty to keep the title. A name that is taken gets (2), (3), ….
+- **The same video in another quality is its own file** (the quality is in the name, like "… 2160p.mp4"). Before, downloading it again in 4K gave back the file of the first time.
+- **2K and 4K play everywhere:** the window explains that these come as VP9 or AV1, which some players (QuickTime) cannot open, and More choices has "Make it play in every player" (converts to H.264, slow for 2K and 4K).
+- **Updates:** after the download you choose "Restart now" or "When I close SwiftDM". Nothing closes by itself any more.
+- The "looking at the link" window is small instead of a big empty one.
+
 ## 1.9.3
 
 - **TikTok and other videos with emoji in the title on Windows** ended with "[Errno 22] Invalid argument". SwiftDM now reads yt-dlp's output without stopping at unusual characters, and tries once more with a plain file name (the video's number) when the system refuses the name.

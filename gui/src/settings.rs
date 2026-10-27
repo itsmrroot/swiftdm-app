@@ -142,6 +142,8 @@ impl Settings {
             subtitles: self.subtitles.trim().to_string(),
             sponsorblock: self.sponsorblock,
             section: None,
+            file_name: String::new(),
+            compatible: false,
         }
     }
 }

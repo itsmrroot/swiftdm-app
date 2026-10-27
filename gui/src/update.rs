@@ -345,10 +345,10 @@ fn after_exit(script: &str) -> Result<()> {
 }
 
 /// Starts installing the downloaded `file`. On success the app must close
-/// right away: the installation continues without it and starts the new
-/// version.
+/// right away: the installation continues without it and, with `relaunch`,
+/// starts the new version (otherwise it is there at the next start).
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-pub fn install(file: &Path, sha256: Option<&str>) -> Result<()> {
+pub fn install(file: &Path, sha256: Option<&str>, relaunch: bool) -> Result<()> {
     match kind() {
         #[cfg(windows)]
         Kind::Setup => {
@@ -369,17 +369,18 @@ pub fn install(file: &Path, sha256: Option<&str>) -> Result<()> {
             // and the next start says so. `/D=` must be the last argument.
             let script = format!(
                 "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-                 $p = Start-Process -FilePath '{setup}' -ArgumentList '/S','/R','/D={folder}' -PassThru -ErrorAction SilentlyContinue; \
+                 $p = Start-Process -FilePath '{setup}' -ArgumentList '/S',{relaunch}'/D={folder}' -PassThru -ErrorAction SilentlyContinue; \
                  if ($p) {{ $p.WaitForExit() }}; \
                  if (-not $p -or $p.ExitCode -ne 0) {{ \
                    $code = if ($p) {{ $p.ExitCode }} else {{ 'not started' }}; \
                    Set-Content -LiteralPath '{marker}' -Value $code; \
-                   Start-Process -FilePath '{exe}' }}",
+                   {restart} }}",
                 pid = std::process::id(),
+                relaunch = if relaunch { "'/R'," } else { "" },
+                restart = if relaunch { format!("Start-Process -FilePath '{}'", quote(&exe)) } else { String::new() },
                 setup = quote(file),
                 folder = quote(folder),
                 marker = quote(&marker),
-                exe = quote(&exe),
             );
             std::process::Command::new("powershell")
                 .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
@@ -409,7 +410,8 @@ src=$(ls -d "$mnt"/*.app | head -n 1)
 rm -rf {staged}
 ditto "$src" {staged} || fail
 hdiutil detach "$mnt" -quiet
-rm -rf {app} && mv {staged} {app} && open {app}"#
+rm -rf {app} && mv {staged} {app}{open}"#,
+                open = if relaunch { format!(" && open {app}") } else { String::new() },
             ))
         }
         #[cfg(target_os = "linux")]
@@ -422,7 +424,7 @@ rm -rf {app} && mv {staged} {app} && open {app}"#
             std::fs::copy(file, &staged)?;
             std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
             std::fs::rename(&staged, &path)?;
-            after_exit(&quote(&path))
+            if relaunch { after_exit(&quote(&path)) } else { Ok(()) }
         }
         #[cfg(target_os = "linux")]
         k @ (Kind::Deb | Kind::Rpm) => {
@@ -447,11 +449,11 @@ rm -rf {app} && mv {staged} {app} && open {app}"#
             // SAFETY: no arguments, no side effects.
             let sudo = if unsafe { libc::geteuid() } == 0 { "" } else { "pkexec " };
             let exe = std::env::current_exe()?;
+            let start = if relaunch { format!("; {} &", quote(&exe)) } else { String::new() };
             after_exit(&format!(
-                "{sudo}/bin/sh -c {} sh {} >/dev/null 2>&1; {} &",
+                "{sudo}/bin/sh -c {} sh {} >/dev/null 2>&1{start}",
                 quote(Path::new(&format!("echo \"{want}  $1\" | sha256sum -c - >/dev/null 2>&1 || exit 1; {install}"))),
                 quote(file),
-                quote(&exe)
             ))
         }
         _ => bail!("this copy of the app has to be updated by hand"),
@@ -482,6 +484,13 @@ pub struct Updater {
     /// In logical order (see `theme::paragraph`).
     error: Option<String>,
     dialog: bool,
+    /// Downloaded and checked, waiting for the person to choose when to
+    /// install: the file and its checksum.
+    ready: Option<(PathBuf, Option<String>)>,
+    /// Install when the app is closed (not now).
+    on_close: bool,
+    /// "Restart now" was chosen and the installer has taken over.
+    close_now: bool,
 }
 
 impl Updater {
@@ -528,11 +537,11 @@ impl Updater {
                     // The checksum of what was offered, for the privileged install.
                     let want = self.release.as_ref().and_then(|r| r.asset.as_ref()).and_then(|a| a.sha256.clone());
                     match result.and_then(|file| {
-                        // Cancelled in the moment the download finished: not installed.
+                        // Cancelled in the moment the download finished: not kept.
                         ensure!(!cancelled, "cancelled");
-                        install(&file, want.as_deref())
+                        Ok(file)
                     }) {
-                        Ok(()) => return true,
+                        Ok(file) => self.ready = Some((file, want)),
                         Err(_) if cancelled => {}
                         Err(e) => {
                             self.error = Some(trlf(
@@ -544,7 +553,20 @@ impl Updater {
                 }
             }
         }
+        if std::mem::take(&mut self.close_now) {
+            return true;
+        }
         false
+    }
+
+    /// Called when the app closes: an update that was to be installed then.
+    pub fn install_on_close(&mut self) {
+        if self.on_close
+            && let Some((file, sha)) = self.ready.take()
+            && let Err(e) = install(&file, sha.as_deref(), false)
+        {
+            log::warn!("the update could not be installed: {e:#}");
+        }
     }
 
     /// The version a newer release has, once one was found.
@@ -665,10 +687,55 @@ impl Updater {
                 return;
             }
 
+            if self.ready.is_some() {
+                let on_close = self.on_close;
+                ui.label(theme::semibold(tr("The update is ready."), theme::scale::BODY).color(p.success));
+                if on_close {
+                    weak(ui, p, trl("It will be installed when you close SwiftDM."));
+                } else {
+                    weak(ui, p, trl("The app will close, install the update and start again."));
+                }
+                if busy {
+                    ui.add_space(4.0);
+                    theme::paragraph(ui, trl("Running downloads are paused and continue after the update."), 14.5, p.warning);
+                }
+                if let Some(e) = &self.error {
+                    ui.add_space(4.0);
+                    theme::paragraph(ui, e, 14.5, p.danger);
+                }
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::primary_button(ui, p, &format!("  {}  ", tr("Restart now")), true).clicked()
+                        && let Some((file, sha)) = &self.ready
+                    {
+                        match install(file, sha.as_deref(), true) {
+                            Ok(()) => {
+                                self.ready = None;
+                                self.close_now = true;
+                                self.dialog = false;
+                            }
+                            Err(e) => {
+                                self.error = Some(trlf(
+                                    "The update could not be installed: {error}",
+                                    &[("error", &i18n::engine(&format!("{e:#}")))],
+                                ))
+                            }
+                        }
+                    }
+                    if !on_close && theme::secondary_button(ui, tr("When I close SwiftDM")).clicked() {
+                        self.on_close = true;
+                        self.dialog = false;
+                    }
+                    if on_close && theme::secondary_button(ui, tr("Close")).clicked() {
+                        self.dialog = false;
+                    }
+                });
+                return;
+            }
             if !release.installable() {
                 weak(ui, p, trl("This copy of the app was not installed with an installer, so it is updated by downloading the new version."));
             } else {
-                weak(ui, p, trl("The app will close, install the update and start again."));
+                weak(ui, p, trl("The update is downloaded first; then you choose when to install it."));
             }
             if busy {
                 ui.add_space(4.0);

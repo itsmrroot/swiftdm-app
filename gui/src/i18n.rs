@@ -234,6 +234,7 @@ pub const ENGINE: &[&str] = &[
     "the site took too long to answer",
     "could not start yt-dlp",
     "Joining video and sound",
+    "Converting the video",
     "Converting the sound",
     "Adding the cover",
     "Adding details",

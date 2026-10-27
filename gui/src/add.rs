@@ -92,6 +92,8 @@ pub struct AddDialog {
     pub before: Option<(String, i64)>,
     /// A checksum to meet, as typed (a file only).
     checksum: String,
+    /// The file name for a video or music, as typed; empty: the title.
+    media_name: String,
 }
 
 /// Finds out what `url` is. Tries the logins of the usual browsers when a
@@ -208,6 +210,7 @@ impl AddDialog {
             part: None,
             before: None,
             checksum: String::new(),
+            media_name: String::new(),
         }
     }
 
@@ -257,6 +260,7 @@ impl AddDialog {
 
     fn options(&self) -> media::Options {
         let mut o = self.options.clone();
+        o.file_name = self.media_name.trim().to_string();
         o.section = self.part.as_ref().and_then(|(a, b)| Some((parse_time(a)?, parse_time(b)?))).filter(|(a, b)| b > a);
         o
     }
@@ -266,7 +270,9 @@ impl AddDialog {
             Stage::Media(info) => vec![NewDownload {
                 url: self.url.clone(),
                 source: Source::Media(self.options()),
-                name: Some(info.title.clone()).filter(|t| !t.is_empty()),
+                name: Some(self.media_name.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| Some(info.title.clone()).filter(|t| !t.is_empty())),
                 dir: self.dir.clone(),
                 thumbnail: info.thumbnail.clone(),
                 headers: self.headers.clone(),
@@ -339,14 +345,19 @@ impl AddDialog {
                         ui.label(tr("Looking at the link…"));
                     });
                     ui.add_space(8.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if theme::secondary_button(ui, tr("Cancel")).clicked() {
-                            if let Stage::Looking(job) = stage {
-                                job.stop();
+                    // A row of its own height: a layout would take all the room left.
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), 36.0),
+                        Layout::right_to_left(Align::Center),
+                        |ui| {
+                            if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                                if let Stage::Looking(job) = stage {
+                                    job.stop();
+                                }
+                                action = Action::Close;
                             }
-                            action = Action::Close;
-                        }
-                    });
+                        },
+                    );
                     return;
                 }
                 Stage::Failed(e) => {
@@ -360,7 +371,7 @@ impl AddDialog {
                     ui.add_space(10.0);
                     let needs_helper =
                         matches!(e.kind, ErrorKind::NoYtDlp | ErrorKind::NeedsJs | ErrorKind::NeedsFfmpeg);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 36.0), Layout::right_to_left(Align::Center), |ui| {
                         if needs_helper {
                             if theme::primary_button(ui, p, &format!("  {}  ", tr("Install helpers")), true).clicked() {
                                 action = Action::InstallHelpers;
@@ -390,7 +401,19 @@ impl AddDialog {
                     });
                     return;
                 }
-                Stage::Media(info) => media_card(ui, p, info, thumbs),
+                Stage::Media(info) => {
+                    media_card(ui, p, info, thumbs);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr("File name")).color(p.weak));
+                        ui.add_space(6.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.media_name)
+                                .hint_text(tr("Leave empty to use the title"))
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                }
                 Stage::Playlist { title, entries, selected } => playlist_card(ui, p, title, entries, selected),
                 Stage::File(probe) => {
                     file_card(ui, p, probe, &mut self.file_name);
@@ -483,6 +506,9 @@ impl AddDialog {
                         });
                     }
                     ui.checkbox(&mut o.sponsorblock, tr("Cut out sponsor segments (SponsorBlock)"));
+                    if o.mode == Mode::Video && o.container == Container::Mp4 && ffmpeg {
+                        ui.checkbox(&mut o.compatible, tr("Make it play in every player (converts to H.264, slow for 2K and 4K)"));
+                    }
                     ui.horizontal(|ui| {
                         let mut on = self.part.is_some();
                         if ui.checkbox(&mut on, tr("Only a part, from")).changed() {
@@ -500,6 +526,24 @@ impl AddDialog {
                         }
                     });
                 });
+                // 2K and 4K come only as VP9 or AV1: not every player opens them.
+                let big = match &self.stage {
+                    Stage::Media(info) => {
+                        let top = self.options.max_height.or_else(|| info.heights.first().copied()).unwrap_or(0);
+                        top > 1080 && info.heights.iter().any(|h| *h > 1080)
+                    }
+                    _ => false,
+                };
+                if big && self.options.mode == Mode::Video && !self.options.compatible {
+                    ui.add_space(6.0);
+                    theme::notice(
+                        ui,
+                        p,
+                        p.accent,
+                        icon::INFO,
+                        trl("2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them; or tick \"Make it play in every player\" under More choices."),
+                    );
+                }
                 if !ffmpeg {
                     ui.add_space(6.0);
                     let msg = if self.options.mode == Mode::Audio {

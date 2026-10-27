@@ -49,6 +49,13 @@ pub struct Options {
     /// Only this part, from and to in seconds.
     #[serde(default)]
     pub section: Option<(u32, u32)>,
+    /// The file name chosen (without the type); empty: made of the title.
+    #[serde(default)]
+    pub file_name: String,
+    /// Convert the video to H.264, which every player opens (slow for 2K and
+    /// 4K: YouTube has those only as VP9 or AV1).
+    #[serde(default)]
+    pub compatible: bool,
 }
 
 /// File type for the sound only.
@@ -287,6 +294,7 @@ fn postprocess_stage(line: &str) -> Option<&'static str> {
     let (status, pp) = rest.split_once('|').unwrap_or((rest, ""));
     (status == "started").then_some(match pp {
         "Merger" => "Joining video and sound",
+        "VideoConvertor" => "Converting the video",
         "ExtractAudio" => "Converting the sound",
         "EmbedThumbnail" => "Adding the cover",
         "Metadata" | "FFmpegMetadata" => "Adding details",
@@ -448,6 +456,41 @@ pub struct Job<'a> {
     pub referer: Option<&'a str>,
 }
 
+/// Whether a file of this name (any type) is in `dir` already: not the parts
+/// of a download that goes on.
+fn name_taken(dir: &Path, stem: &str) -> bool {
+    let prefix = format!("{stem}.");
+    std::fs::read_dir(dir).is_ok_and(|d| {
+        d.filter_map(|e| e.ok()).any(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let unfinished = name.ends_with(".part")
+                || name.ends_with(".ytdl")
+                || name.ends_with(".temp")
+                || name.rsplit_once(".f").is_some_and(|(_, r)| r.starts_with(|c: char| c.is_ascii_digit()));
+            name.starts_with(&prefix) && !unfinished
+        })
+    })
+}
+
+/// yt-dlp's `-o` for `job`. The quality is in the name: the same video in
+/// another quality is another file (and not "already downloaded").
+fn output_template(job: &Job, plain_name: bool) -> String {
+    let chosen = job.options.file_name.trim();
+    if !chosen.is_empty() {
+        let base = crate::util::sanitize_filename(chosen);
+        let mut stem = base.clone();
+        let mut n = 2;
+        while name_taken(job.dir, &stem) && n < 1000 {
+            stem = format!("{base} ({n})");
+            n += 1;
+        }
+        // `%` is yt-dlp's own.
+        return format!("{}.%(ext)s", stem.replace('%', "%%"));
+    }
+    let quality = "%(height& {}p|)s";
+    if plain_name { format!("%(id)s{quality}.%(ext)s") } else { format!("%(title).150B [%(id)s]{quality}.%(ext)s") }
+}
+
 /// The yt-dlp arguments for `job` (without the program and the link).
 fn download_args(job: &Job, has_ffmpeg: bool, plain_name: bool) -> Vec<String> {
     let mut a: Vec<String> = vec![
@@ -469,7 +512,7 @@ fn download_args(job: &Job, has_ffmpeg: bool, plain_name: bool) -> Vec<String> {
         // With the id: different posts often share a title ("Video by …"),
         // and yt-dlp would take an existing file for this one. Only the id
         // when the system refused the file name made of the title.
-        if plain_name { "%(id)s.%(ext)s" } else { "%(title).150B [%(id)s].%(ext)s" }.into(),
+        output_template(job, plain_name),
         "-N".into(),
         job.fragments.clamp(1, 16).to_string(),
     ];
@@ -530,8 +573,20 @@ fn download_args(job: &Job, has_ffmpeg: bool, plain_name: bool) -> Vec<String> {
                 }
             }
             if has_ffmpeg {
-                a.extend(["--merge-output-format".into(), o.container.name().into(), "--embed-metadata".into()]);
+                // To convert to MP4 the video is first joined as MKV: a video
+                // that is MP4 already is not converted.
+                let convert = o.compatible && o.container == Container::Mp4;
+                let merged = if convert { "mkv" } else { o.container.name() };
+                a.extend(["--merge-output-format".into(), merged.into(), "--embed-metadata".into()]);
                 a.push("--embed-chapters".into());
+                if convert {
+                    a.extend([
+                        "--recode-video".into(),
+                        "mp4".into(),
+                        "--postprocessor-args".into(),
+                        "VideoConvertor:-c:v libx264 -preset veryfast -crf 20 -c:a aac".into(),
+                    ]);
+                }
             } else {
                 // Separate video and sound cannot be joined: pick one file with both.
                 let f = h.map_or("b".to_string(), |h| format!("b[height<={h}]/b"));
@@ -958,7 +1013,15 @@ mod tests {
         let job =
             Job { url: "u", dir: &dir, options: &opts, rate_limit: 1000, fragments: 4, proxy: None, referer: None };
         let plain = download_args(&job, true, true).join(" ");
-        assert!(plain.contains("-o %(id)s.%(ext)s") && !plain.contains("sdm-title"), "{plain}");
+        assert!(plain.contains("-o %(id)s%(height& {}p|)s.%(ext)s") && !plain.contains("sdm-title"), "{plain}");
+        let normal = download_args(&job, true, false).join(" ");
+        assert!(normal.contains("[%(id)s]%(height& {}p|)s.%(ext)s"), "the quality is in the name: {normal}");
+        let named = Options { file_name: "My 100% video".into(), compatible: true, ..Default::default() };
+        let job2 =
+            Job { url: "u", dir: &dir, options: &named, rate_limit: 0, fragments: 4, proxy: None, referer: None };
+        let a = download_args(&job2, true, false).join(" ");
+        assert!(a.contains("-o My 100%% video.%(ext)s"), "{a}");
+        assert!(a.contains("--merge-output-format mkv") && a.contains("--recode-video mp4"), "{a}");
         let a = download_args(&job, false, false).join(" ");
         assert!(a.contains("-S res:720,") && a.contains("-f b[height<=720]/b") && a.contains("-r 1000"));
         let opts = Options {
