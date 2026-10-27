@@ -243,6 +243,6 @@ official sources (GitHub releases of yt-dlp, FFmpeg builds and Deno), checking t
 
 <div align="center">
 
-MIT License · © 2026 Bashar Salmo · **Powered by Bashar Salmo**
+PolyForm Noncommercial License 1.0.0 · © 2026 Bashar Salmo · **Powered by Bashar Salmo**
 
 </div>

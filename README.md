@@ -68,4 +68,10 @@ every system and publishes the archives and installers to
 
 ## License
 
-MIT © 2026 Bashar Salmo. Noto Sans Arabic: SIL Open Font License (`gui/assets/fonts/OFL.txt`).
+[PolyForm Noncommercial 1.0.0](LICENSE) © 2026 Bashar Salmo. The app is free to download and use, and the code is
+public, but you may not sell it or use it in a commercial product without my written permission.
+Versions 1.0.0 to 1.8.3 were released under the MIT license and stay under it for anyone who has them.
+
+Third-party parts keep their own licenses: Noto Sans Arabic and Inter (SIL Open Font License,
+`gui/assets/fonts/`) and the Rust libraries the app is built with (mostly MIT or Apache-2.0). yt-dlp and FFmpeg are
+downloaded from their own sources when needed and are not part of SwiftDM.

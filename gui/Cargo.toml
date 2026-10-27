@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "Desktop app for SwiftDM"
 authors = ["Bashar Salmo"]
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 build = "build.rs"
 
 [dependencies]
@@ -88,7 +88,7 @@ desktop-template = "assets/linux/swiftdm-gui.desktop"
 [package.metadata.generate-rpm]
 name = "swiftdm"
 summary = "Download videos, music and files from any link"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 assets = [
     { source = "target/release/swiftdm-gui", dest = "/usr/bin/swiftdm-gui", mode = "755" },
     { source = "target/release/swiftdm", dest = "/usr/bin/swiftdm", mode = "755" },
@@ -96,6 +96,7 @@ assets = [
     { source = "gui/assets/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/swiftdm-gui.png", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/licenses/swiftdm/LICENSE", mode = "644", doc = true },
     { source = "gui/assets/fonts/OFL.txt", dest = "/usr/share/licenses/swiftdm/OFL-NotoSansArabic.txt", mode = "644", doc = true },
+    { source = "gui/assets/fonts/LICENSE-Inter.txt", dest = "/usr/share/licenses/swiftdm/OFL-Inter.txt", mode = "644", doc = true },
 ]
 
 [package.metadata.generate-rpm.requires]

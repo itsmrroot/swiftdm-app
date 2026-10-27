@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## Next
+
+- **New license: PolyForm Noncommercial 1.0.0.** SwiftDM stays free to download and use and its code stays public, but selling it or using it in a commercial product needs written permission. Versions up to 1.8.3 were released under the MIT license and stay under it.
+
 ## 1.8.3
 
 - **FFmpeg's Update no longer downloads again every time:** SwiftDM remembers which build it installed and says "FFmpeg is up to date" when there is no newer one. (A copy installed by an older SwiftDM is replaced once, to start the memory.)
