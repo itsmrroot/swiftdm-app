@@ -73,7 +73,39 @@ pub fn last_seen() -> Option<i64> {
     std::fs::read_to_string(seen_file()).ok()?.trim().parse().ok()
 }
 
+/// One line in `helper.log` (the helper has no log of its own): what the
+/// extension asked and what came of it. Kept small.
+fn helper_log(line: &str) {
+    use std::io::Write;
+    let path = swiftdm::paths::data_dir().join("helper.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} v{} {line}", swiftdm::util::now(), env!("CARGO_PKG_VERSION"));
+    }
+}
+
 fn answer(m: &Value) -> Value {
+    let reply = answer_inner(m);
+    let items = m.get("items").and_then(Value::as_array).map_or(0, Vec::len);
+    let first = m
+        .get("items")
+        .and_then(|i| i.get(0))
+        .and_then(|i| i.get("url"))
+        .and_then(Value::as_str)
+        .map(|u| swiftdm::util::host(u).to_string())
+        .unwrap_or_default();
+    helper_log(&format!(
+        "message {} ask={:?} items={items} host={first} -> {}",
+        m.get("type").and_then(Value::as_str).unwrap_or("?"),
+        m.get("ask").and_then(Value::as_bool),
+        reply
+    ));
+    reply
+}
+
+fn answer_inner(m: &Value) -> Value {
     let _ = std::fs::write(seen_file(), swiftdm::util::now().to_string());
     match m.get("type").and_then(Value::as_str) {
         Some("ping") => json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }),

@@ -410,6 +410,14 @@ impl App {
                 .filter(|i| i.url == r.url && i.status == Status::Done)
                 .max_by_key(|i| i.finished)
                 .map(|i| (i.display_name().to_string(), i.finished.unwrap_or(i.added)));
+            log::info!(
+                "link from {}: host={} mode={} ask={:?} several={several} quick={quick} before={}",
+                if r.from_browser { "the browser" } else { "the app" },
+                swiftdm::util::host(&r.url),
+                r.mode,
+                r.ask,
+                before.is_some()
+            );
             let mut dialog = AddDialog::new(r, &self.settings, quick);
             if before.is_some() {
                 // Downloaded before: ask, whatever the setting.

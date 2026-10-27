@@ -254,7 +254,10 @@ impl AddDialog {
                 self.file_name = self.name_hint.clone().unwrap_or_else(|| probe.name.clone());
                 Stage::File(probe)
             }
-            Ok(Err(e)) => Stage::Failed(e),
+            Ok(Err(e)) => {
+                log::info!("looking at {} failed: {:?}: {}", swiftdm::util::host(&self.url), e.kind, e.message);
+                Stage::Failed(e)
+            }
             Err(e) => Stage::Failed(LookError { kind: ErrorKind::Other, message: format!("{e:#}") }),
         };
         if self.quick {

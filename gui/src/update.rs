@@ -265,6 +265,7 @@ pub fn check() -> Result<Option<Release>> {
     if gh.draft || gh.prerelease || !is_newer(&version, current()) {
         return Ok(None);
     }
+    log::info!("update check: {version} is newer than {} (this copy: {:?})", current(), kind());
     let asset = asset_name(&kind()).and_then(|name| {
         let a = gh.assets.into_iter().find(|a| a.name == name)?;
         Some(Asset {
@@ -519,9 +520,13 @@ impl Updater {
                         ensure!(!cancelled, "cancelled");
                         Ok(file)
                     }) {
-                        Ok(file) => self.ready = Some((file, want)),
+                        Ok(file) => {
+                            log::info!("the update was downloaded and checked: {}", file.display());
+                            self.ready = Some((file, want));
+                        }
                         Err(_) if cancelled => {}
                         Err(e) => {
+                            log::warn!("the update could not be downloaded: {e:#}");
                             self.error = Some(trlf(
                                 "The update could not be installed: {error}",
                                 &[("error", &i18n::engine(&format!("{e:#}")))],
@@ -532,6 +537,7 @@ impl Updater {
             }
         }
         if std::mem::take(&mut self.close_now) {
+            log::info!("closing so that the update can be installed");
             return true;
         }
         false
@@ -543,7 +549,11 @@ impl Updater {
         if let Some(r) = &self.release {
             let _ = std::fs::write(pending_path(), &r.version);
         }
+        log::info!("handing the update to its installer: {} (relaunch: {relaunch})", file.display());
         let result = install(file, sha.as_deref(), relaunch);
+        if let Err(e) = &result {
+            log::warn!("the installer could not be started: {e:#}");
+        }
         if result.is_err() {
             let _ = std::fs::remove_file(pending_path());
         }
