@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.4
+
+- **The New download window fits small windows:** its choices scroll, and Cancel and Download stay in view. Before, with "More choices" open it could be taller than the window and hide its top and bottom.
+
 ## 1.10.3
 
 - **More in the log** (`swiftdm.log` and, for the browser extension, `helper.log`, both in SwiftDM's data folder): what the extension sent, whether the choices were asked for, why a link could not be looked at, and each step of an update. To help find problems that cannot be seen from outside.

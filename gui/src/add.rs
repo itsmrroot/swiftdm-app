@@ -339,6 +339,10 @@ impl AddDialog {
             });
             ui.add(egui::Label::new(RichText::new(&self.url).color(p.weak).size(theme::scale::CAPTION)).truncate());
             ui.add_space(10.0);
+            // The body scrolls when the window is small: the buttons stay in view.
+            let max_h = (ctx.content_rect().height() - 190.0).max(180.0);
+            let mut early = false;
+            egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
             if let Some((name, when)) = &self.before {
                 let when = crate::list::date(*when);
                 theme::notice(
@@ -370,6 +374,7 @@ impl AddDialog {
                             }
                         },
                     );
+                    early = true;
                     return;
                 }
                 Stage::Failed(e) => {
@@ -411,6 +416,7 @@ impl AddDialog {
                             action = Action::Close;
                         }
                     });
+                    early = true;
                     return;
                 }
                 Stage::Media(info) => {
@@ -584,6 +590,10 @@ impl AddDialog {
             });
             if let Stage::Playlist { .. } = self.stage {
                 ui.checkbox(&mut self.own_folder, tr("In a folder named after the playlist"));
+            }
+            });
+            if early {
+                return;
             }
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
