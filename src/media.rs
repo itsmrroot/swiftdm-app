@@ -1,7 +1,7 @@
 //! Videos and music from sites (YouTube, TikTok, Instagram, X and 1800+
 //! more), read by yt-dlp.
 
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -449,7 +449,7 @@ pub struct Job<'a> {
 }
 
 /// The yt-dlp arguments for `job` (without the program and the link).
-fn download_args(job: &Job, has_ffmpeg: bool) -> Vec<String> {
+fn download_args(job: &Job, has_ffmpeg: bool, plain_name: bool) -> Vec<String> {
     let mut a: Vec<String> = vec![
         "--newline".into(),
         "--progress".into(),
@@ -462,20 +462,22 @@ fn download_args(job: &Job, has_ffmpeg: bool) -> Vec<String> {
         "--print".into(),
         "before_dl:[sdm-size] %(filesize,filesize_approx)s".into(),
         "--print".into(),
-        "before_dl:[sdm-title] %(title)s".into(),
-        "--print".into(),
         "after_move:[sdm-file] %(filepath)s".into(),
         "-P".into(),
         job.dir.display().to_string(),
         "-o".into(),
         // With the id: different posts often share a title ("Video by …"),
-        // and yt-dlp would take an existing file for this one.
-        "%(title).150B [%(id)s].%(ext)s".into(),
+        // and yt-dlp would take an existing file for this one. Only the id
+        // when the system refused the file name made of the title.
+        if plain_name { "%(id)s.%(ext)s" } else { "%(title).150B [%(id)s].%(ext)s" }.into(),
         "-N".into(),
         job.fragments.clamp(1, 16).to_string(),
     ];
     if job.rate_limit > 0 {
         a.extend(["-r".into(), job.rate_limit.to_string()]);
+    }
+    if !plain_name {
+        a.extend(["--print".into(), "before_dl:[sdm-title] %(title)s".into()]);
     }
     let o = job.options;
     if let Some(b) = &o.cookies_from {
@@ -566,10 +568,28 @@ fn parse_progress(line: &str) -> Option<Line> {
 /// Downloads with yt-dlp. Returns the saved file, or `None` when stopped
 /// (yt-dlp continues from its `.part` file next time).
 pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result::Result<Option<PathBuf>, MediaError> {
+    match download_once(&job, stop, report, false) {
+        // "[Errno 22] Invalid argument": the system did not accept a file
+        // name or a line made of the title (emoji and the like on Windows):
+        // once more with a plain name.
+        Err(e) if e.message.contains("Errno 22") && !stop.load(Ordering::Relaxed) => {
+            log::warn!("yt-dlp: {}; trying a plain file name", e.message);
+            download_once(&job, stop, report, true)
+        }
+        r => r,
+    }
+}
+
+fn download_once(
+    job: &Job,
+    stop: &AtomicBool,
+    report: &dyn Report,
+    plain_name: bool,
+) -> std::result::Result<Option<PathBuf>, MediaError> {
     let other = |e: anyhow::Error| MediaError { kind: ErrorKind::Other, message: format!("{e:#}") };
     std::fs::create_dir_all(job.dir).map_err(|e| other(anyhow!("cannot create {}: {e}", job.dir.display())))?;
     let mut cmd = base_command(&ytdlp()?);
-    cmd.args(download_args(&job, tools::find(Tool::Ffmpeg).is_some()));
+    cmd.args(download_args(job, tools::find(Tool::Ffmpeg).is_some(), plain_name));
     cmd.arg("--").arg(job.url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = spawn(cmd).map_err(other)?;
@@ -584,7 +604,7 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
             // A video and its sound are separate downloads: add them up.
             let mut overall: Option<u64> = None;
             let (mut base, mut last_format, mut last_total) = (0u64, String::new(), 0u64);
-            for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            for line in lossy_lines(stdout) {
                 if let Some(p) = parse_progress(&line) {
                     if !last_format.is_empty() && p.format != last_format {
                         base += last_total;
@@ -610,7 +630,7 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
         });
         let errors = errors.clone();
         scope.spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+            for line in lossy_lines(stderr) {
                 // In quiet mode (implied by --print) yt-dlp writes these here.
                 if line.starts_with("[sdm-pp] ") {
                     if let Some(stage) = postprocess_stage(&line) {
@@ -650,6 +670,21 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
         Some(f) => Ok(Some(f)),
         None => Err(MediaError { kind: ErrorKind::Other, message: "yt-dlp finished but saved no file".into() }),
     }
+}
+
+/// The lines of `r` as text; bytes that are not valid text become `?`
+/// instead of ending the reading (a program whose output is no longer read
+/// fails on its next write).
+fn lossy_lines(r: impl std::io::Read) -> impl Iterator<Item = String> {
+    use std::io::BufRead;
+    let mut r = BufReader::new(r);
+    std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']).to_string()),
+        }
+    })
 }
 
 /// Starts `cmd` in its own process group, so that stopping it also stops
@@ -917,12 +952,14 @@ mod tests {
         let dir = PathBuf::from("/tmp/x");
         let opts = Options { mode: Mode::Audio, audio_kbps: 192, ..Default::default() };
         let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 0, fragments: 4, proxy: None, referer: None };
-        let a = download_args(&job, true).join(" ");
+        let a = download_args(&job, true, false).join(" ");
         assert!(a.contains("--audio-format mp3") && a.contains("--audio-quality 192K"));
         let opts = Options { max_height: Some(720), ..Default::default() };
         let job =
             Job { url: "u", dir: &dir, options: &opts, rate_limit: 1000, fragments: 4, proxy: None, referer: None };
-        let a = download_args(&job, false).join(" ");
+        let plain = download_args(&job, true, true).join(" ");
+        assert!(plain.contains("-o %(id)s.%(ext)s") && !plain.contains("sdm-title"), "{plain}");
+        let a = download_args(&job, false, false).join(" ");
         assert!(a.contains("-S res:720,") && a.contains("-f b[height<=720]/b") && a.contains("-r 1000"));
         let opts = Options {
             container: Container::Mkv,
@@ -940,7 +977,7 @@ mod tests {
             proxy: Some("socks5://127.0.0.1:9050"),
             referer: Some("https://page/"),
         };
-        let a = download_args(&job, true).join(" ");
+        let a = download_args(&job, true, false).join(" ");
         for want in [
             "--merge-output-format mkv",
             "--sub-langs en,ar",
@@ -955,7 +992,7 @@ mod tests {
         let opts =
             Options { mode: Mode::Audio, audio_format: AudioFormat::Flac, audio_kbps: 320, ..Default::default() };
         let job = Job { url: "u", dir: &dir, options: &opts, rate_limit: 0, fragments: 4, proxy: None, referer: None };
-        let a = download_args(&job, true).join(" ");
+        let a = download_args(&job, true, false).join(" ");
         assert!(a.contains("--audio-format flac") && !a.contains("--audio-quality"));
     }
 }

@@ -3,6 +3,11 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.9.3
+
+- **TikTok and other videos with emoji in the title on Windows** ended with "[Errno 22] Invalid argument". SwiftDM now reads yt-dlp's output without stopping at unusual characters, and tries once more with a plain file name (the video's number) when the system refuses the name.
+- When the browser sends a link and the window cannot come to the front, its taskbar button flashes: the choices (quality, format) are waiting there.
+
 ## 1.9.2
 
 - **Browser extension on Windows (Brave, Vivaldi, Chromium):** SwiftDM now also registers its helper where Chrome keeps them, which these browsers read. Before, they could answer "Could not reach SwiftDM". Open SwiftDM once after the update.

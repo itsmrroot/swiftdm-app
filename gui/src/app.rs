@@ -1750,6 +1750,11 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if !links.is_empty() {
                 self.add_requests(ctx, links);
+                // Where the system keeps the window from coming to the front
+                // (Windows may), the taskbar button flashes: the choices wait.
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational,
+                ));
             }
         }
         // Also while minimized: notifications, the schedule, when done.
