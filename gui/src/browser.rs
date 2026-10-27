@@ -307,7 +307,17 @@ impl Browser {
         })
     }
 
-    /// Where the browser looks for helpers (Windows registry, per user).
+    /// Where the browser may look for helpers (Windows registry, per user):
+    /// its own place, and Chrome's for the browsers built on Chromium.
+    #[cfg(windows)]
+    fn registry_keys(self) -> Vec<&'static str> {
+        const CHROME: &str = r"HKCU\Software\Google\Chrome\NativeMessagingHosts";
+        match self {
+            Browser::Edge | Browser::Firefox | Browser::Chrome => vec![self.registry_key()],
+            _ => vec![self.registry_key(), CHROME],
+        }
+    }
+
     #[cfg(windows)]
     fn registry_key(self) -> &'static str {
         match self {
@@ -426,13 +436,20 @@ pub fn register() -> Result<Vec<Browser>> {
         let manifest = if b.is_firefox() { &firefox } else { &chrome };
         #[cfg(windows)]
         {
-            let key = format!(r"{}\{HOST_NAME}", b.registry_key());
-            let ok = swiftdm::tools::command("reg")
-                .args(["add", &key, "/ve", "/t", "REG_SZ", "/d", &manifest.display().to_string(), "/f"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
+            // Browsers made from Chromium look in Chrome's place on Windows
+            // (Brave, Vivaldi and Chromium did not find the helper in their
+            // own): it is registered in both.
+            let mut ok = false;
+            for key in b.registry_keys() {
+                ok |= swiftdm::tools::command("reg")
+                    .args(["add", &format!(r"{key}\{HOST_NAME}"), "/ve", "/t", "REG_SZ", "/d"])
+                    .arg(manifest)
+                    .args(["/f"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+            }
             if ok {
                 done.push(b);
             }

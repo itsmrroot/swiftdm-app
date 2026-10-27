@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.9.2
+
+- **Browser extension on Windows (Brave, Vivaldi, Chromium):** SwiftDM now also registers its helper where Chrome keeps them, which these browsers read. Before, they could answer "Could not reach SwiftDM". Open SwiftDM once after the update.
+
 ## 1.9.1
 
 - **Windows update:** the setup now installs into the folder the app runs from, and its result is checked. If it does not succeed, the old version starts again and says so (with the setup's exit code), instead of silently staying on the old version.
