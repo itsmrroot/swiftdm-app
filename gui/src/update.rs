@@ -376,6 +376,7 @@ pub fn install(file: &Path, sha256: Option<&str>, relaunch: bool) -> Result<()> 
                 std::process::Command::new("open").arg(file).spawn()?;
                 return Ok(());
             }
+            let app_path = app.clone();
             let (dmg, app, staged) = (quote(file), quote(&app), quote(&app.with_extension("app.new")));
             // The disk image shows the licence, which `yes` accepts. The old
             // app is only removed once the new one is fully copied; if
@@ -389,8 +390,12 @@ src=$(ls -d "$mnt"/*.app | head -n 1)
 rm -rf {staged}
 ditto "$src" {staged} || fail
 hdiutil detach "$mnt" -quiet
-rm -rf {app} && mv {staged} {app}{open}"#,
-                open = if relaunch { format!(" && open {app}") } else { String::new() },
+rm -rf {old}
+mv {app} {old} || fail
+mv {staged} {app} || {{ mv {old} {app}; fail; }}
+rm -rf {old}{open}"#,
+                open = if relaunch { format!("\nopen {app}") } else { String::new() },
+                old = quote(&app_path.with_extension("app.old")),
             ))
         }
         #[cfg(target_os = "linux")]
@@ -431,7 +436,9 @@ rm -rf {app} && mv {staged} {app}{open}"#,
             let start = if relaunch { format!("; {} &", quote(&exe)) } else { String::new() };
             after_exit(&format!(
                 "{sudo}/bin/sh -c {} sh {} >/dev/null 2>&1{start}",
-                quote(Path::new(&format!("echo \"{want}  $1\" | sha256sum -c - >/dev/null 2>&1 || exit 1; {install}"))),
+                quote(Path::new(&format!(
+                    "d=$(mktemp -d) || exit 1; chmod 755 \"$d\"; cp \"$1\" \"$d/p\" || exit 1; chmod 644 \"$d/p\"; set -- \"$d/p\"; echo \"{want}  $1\" | sha256sum -c - >/dev/null 2>&1 || exit 1; {install}; r=$?; rm -rf \"$d\"; exit $r"
+                ))),
                 quote(file),
             ))
         }
@@ -468,15 +475,19 @@ pub struct Updater {
     ready: Option<(PathBuf, Option<String>)>,
     /// Install when the app is closed (not now).
     on_close: bool,
-    /// "Restart now" was chosen and the installer has taken over.
+    /// "Restart now" was chosen: the app closes, and its installer starts
+    /// from `on_exit`, once the downloads are paused and the list is saved.
     close_now: bool,
+    /// Start the new version afterwards (not with "When I close SwiftDM").
+    relaunch: bool,
 }
 
 impl Updater {
     /// Asks GitHub in the background. A `manual` check shows its result; a
     /// check at start only shows the update button if there is one.
     pub fn check(&mut self, ctx: &egui::Context, manual: bool) {
-        if self.checking.is_some() || self.download.is_some() {
+        // Not while a downloaded update waits: it belongs to the release it came from.
+        if self.checking.is_some() || self.download.is_some() || self.ready.is_some() {
             return;
         }
         self.error = None;
@@ -563,7 +574,7 @@ impl Updater {
     /// Called when the app closes: an update that was to be installed then.
     pub fn install_on_close(&mut self) {
         if self.on_close
-            && let Err(e) = self.start_install(false)
+            && let Err(e) = self.start_install(self.relaunch)
         {
             log::warn!("the update could not be installed: {e:#}");
         }
@@ -707,19 +718,11 @@ impl Updater {
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if theme::primary_button(ui, p, &format!("  {}  ", tr("Restart now")), true).clicked() {
-                        match self.start_install(true) {
-                            Ok(()) => {
-                                self.ready = None;
-                                self.close_now = true;
-                                self.dialog = false;
-                            }
-                            Err(e) => {
-                                self.error = Some(trlf(
-                                    "The update could not be installed: {error}",
-                                    &[("error", &i18n::engine(&format!("{e:#}")))],
-                                ))
-                            }
-                        }
+                        // The installer starts once the app has closed properly.
+                        self.on_close = true;
+                        self.relaunch = true;
+                        self.close_now = true;
+                        self.dialog = false;
                     }
                     if !on_close && theme::secondary_button(ui, tr("When I close SwiftDM")).clicked() {
                         self.on_close = true;

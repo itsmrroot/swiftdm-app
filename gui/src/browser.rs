@@ -148,9 +148,24 @@ fn incoming(item: &Value, ask: Option<bool>) -> Option<Incoming> {
 /// themselves; the helper, started by the browser in front, may).
 fn deliver(items: &[Incoming]) -> Value {
     allow_to_front();
-    if instance::send(items) {
-        to_front();
-        return json!({ "ok": true });
+    match instance::deliver(items) {
+        instance::Delivery::Taken => {
+            to_front();
+            return json!({ "ok": true });
+        }
+        // The app has them (queued): wait for it, and never send them again
+        // (that would be two windows for one click).
+        instance::Delivery::Slow => {
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(250));
+                if instance::responding() {
+                    to_front();
+                    return json!({ "ok": true });
+                }
+            }
+            return json!({ "ok": false, "error": "SwiftDM does not respond" });
+        }
+        instance::Delivery::NoOne => {}
     }
     if let Err(e) = start_app() {
         return json!({ "ok": false, "error": format!("{e:#}") });
@@ -567,7 +582,15 @@ fn write_extension_to(dir: &Path, firefox: bool) -> Result<PathBuf> {
         let target = dir.join(path);
         std::fs::create_dir_all(target.parent().unwrap_or(dir))?;
         let bytes = if firefox && *path == "manifest.json" { firefox_manifest(bytes)? } else { bytes.to_vec() };
-        std::fs::write(&target, bytes).with_context(|| format!("cannot write {}", target.display()))?;
+        // Only what changed, and by renaming a finished file into place: a
+        // browser that reads the folder meanwhile never sees a half-written
+        // (or emptied) manifest.
+        if std::fs::read(&target).is_ok_and(|old| old == bytes) {
+            continue;
+        }
+        let tmp = target.with_extension("swiftdm-new");
+        std::fs::write(&tmp, &bytes).with_context(|| format!("cannot write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &target).with_context(|| format!("cannot write {}", target.display()))?;
     }
     Ok(dir.to_path_buf())
 }

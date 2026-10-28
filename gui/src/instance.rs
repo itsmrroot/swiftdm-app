@@ -182,6 +182,30 @@ pub fn send(requests: &[Incoming]) -> bool {
     hand_over_at(&port_file(), requests) == Handed::Yes
 }
 
+/// What came of handing links to the running app.
+#[derive(Debug, PartialEq)]
+pub enum Delivery {
+    Taken,
+    /// The app has the links (queued) but its loop is not running just now.
+    Slow,
+    NoOne,
+}
+
+/// Like [`send`], telling a slow app from none: the links of a slow one are
+/// queued, and must not be sent again.
+pub fn deliver(requests: &[Incoming]) -> Delivery {
+    match hand_over_at(&port_file(), requests) {
+        Handed::Yes => Delivery::Taken,
+        Handed::Frozen(_) => Delivery::Slow,
+        Handed::NoOne => Delivery::NoOne,
+    }
+}
+
+/// Whether the running app's loop answers now.
+pub fn responding() -> bool {
+    hand_over_at(&port_file(), &[]) == Handed::Yes
+}
+
 /// Hands `links` to a running SwiftDM, or becomes the one others hand to.
 pub fn start(links: &[String]) -> Start {
     let requests: Vec<Incoming> = links.iter().map(|l| Incoming::link(l)).collect();

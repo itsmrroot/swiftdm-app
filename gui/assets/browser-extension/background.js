@@ -93,9 +93,14 @@ async function sendMany({ urls = [], referer = "", incognito = false }) {
 }
 
 async function badge(ok) {
-  await ext.action.setBadgeBackgroundColor({ color: ok ? "#16a34a" : "#dc2626" });
-  await ext.action.setBadgeText({ text: ok ? "✓" : "!" });
-  setTimeout(() => ext.action.setBadgeText({ text: "" }), 2500);
+  // A badge that cannot be set must not turn a hand-over that worked into a failure.
+  try {
+    await ext.action.setBadgeBackgroundColor({ color: ok ? "#16a34a" : "#dc2626" });
+    await ext.action.setBadgeText({ text: ok ? "✓" : "!" });
+    setTimeout(() => ext.action.setBadgeText({ text: "" }).catch(() => {}), 2500);
+  } catch {
+    // Nothing to show it on.
+  }
 }
 
 /**
@@ -313,3 +318,21 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
     .catch((e) => reply({ ok: false, error: String(e?.message ?? e) }));
   return true; // answers asynchronously
 });
+
+// SwiftDM refreshes this folder when it is updated, but the browser keeps the
+// manifest it read earlier: when SwiftDM is newer, the extension reloads
+// itself (once per version, so that a folder that is not updated cannot make
+// it reload again and again).
+(async () => {
+  try {
+    const reply = await native({ type: "ping" });
+    const mine = ext.runtime.getManifest().version;
+    if (!reply?.ok || !reply.version || reply.version === mine) return;
+    const { reloadedFor } = await ext.storage.local.get("reloadedFor");
+    if (reloadedFor === reply.version) return;
+    await ext.storage.local.set({ reloadedFor: reply.version });
+    ext.runtime.reload();
+  } catch {
+    // SwiftDM is not reachable: nothing to compare with.
+  }
+})();

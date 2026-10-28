@@ -30,6 +30,8 @@ jobs:
             have=$(grep -m1 '^version = ' "$f" | cut -d'"' -f2)
             [ "$have" = "$want" ] || { echo "::error::$f is version $have, but the tag is $GITHUB_REF_NAME"; exit 1; }
           done
+          have=$(grep -m1 '"version"' gui/assets/browser-extension/manifest.json | cut -d'"' -f4)
+          [ "$have" = "$want" ] || { echo "::error::the extension's manifest.json is version $have, but the tag is $GITHUB_REF_NAME"; exit 1; }
       # The text of the release page (and of "What's new" in the app) is the
       # section of this version in CHANGELOG.md.
       - name: Release notes from CHANGELOG.md

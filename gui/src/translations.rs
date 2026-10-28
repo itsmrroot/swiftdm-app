@@ -275,6 +275,10 @@ pub const ARABIC: &[(&str, &str)] = &[
     ("When I close SwiftDM", "عند إغلاقي SwiftDM"),
     ("It will be installed when you close SwiftDM.", "سيُثبَّت عند إغلاقك SwiftDM."),
     ("Converting the video", "جارٍ تحويل الفيديو"),
+    (
+        "2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them.",
+        "فيديوهات 2K و4K بصيغة VP9 أو AV1 ولا تفتحها بعض المشغّلات (QuickTime مثلًا). يفتحها VLC.",
+    ),
     ("Leave empty to use the title", "اتركه فارغًا لاستخدام العنوان"),
     (
         "Make it play in every player (converts to H.264, slow for 2K and 4K)",
@@ -282,7 +286,7 @@ pub const ARABIC: &[(&str, &str)] = &[
     ),
     (
         "2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them; or tick \"Make it play in every player\" under More choices.",
-        "فيديوهات 2K و4K بصيغة VP9 أو AV1 ولا تفتحها بعض المشغّلات (QuickTime مثلًا). يفتحها VLC، أو فعّل «اجعله يعمل في كل مشغّل» ضمن المزيد من الخيارات.",
+        "فيديوهات 2K و4K بصيغة VP9 أو AV1 ولا تفتحها بعض المشغّلات (QuickTime مثلًا). يفتحها VLC، أو فعّل «اجعله يعمل في كل مشغّل» ضمن «خيارات أخرى».",
     ),
     ("Converting the sound", "جارٍ تحويل الصوت"),
     ("Kiwi", "كيوي"),
@@ -971,6 +975,10 @@ pub const GERMAN: &[(&str, &str)] = &[
     ("When I close SwiftDM", "Wenn ich SwiftDM schließe"),
     ("It will be installed when you close SwiftDM.", "Es wird installiert, wenn Sie SwiftDM schließen."),
     ("Converting the video", "Das Video wird umgewandelt"),
+    (
+        "2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them.",
+        "2K- und 4K-Videos sind VP9 oder AV1, die manche Player nicht öffnen (zum Beispiel QuickTime). VLC öffnet sie.",
+    ),
     ("Leave empty to use the title", "Leer lassen, um den Titel zu nehmen"),
     (
         "Make it play in every player (converts to H.264, slow for 2K and 4K)",
@@ -1679,6 +1687,10 @@ pub const TURKISH: &[(&str, &str)] = &[
     ("When I close SwiftDM", "SwiftDM'i kapattığımda"),
     ("It will be installed when you close SwiftDM.", "SwiftDM'i kapattığınızda yüklenecek."),
     ("Converting the video", "Video dönüştürülüyor"),
+    (
+        "2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them.",
+        "2K ve 4K videolar VP9 veya AV1'dir; bazı oynatıcılar açamaz (örneğin QuickTime). VLC açar.",
+    ),
     ("Leave empty to use the title", "Başlığı kullanmak için boş bırakın"),
     (
         "Make it play in every player (converts to H.264, slow for 2K and 4K)",

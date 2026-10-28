@@ -205,13 +205,15 @@ impl Helpers {
 
     pub fn cancel(&mut self) {
         self.queue.clear();
+        self.checking = None;
+        self.updating = None;
         if let Some((_, job)) = &self.installing {
             job.stop();
         }
     }
 
     pub fn busy(&self) -> bool {
-        self.installing.is_some() || !self.queue.is_empty() || self.checking.is_some()
+        self.installing.is_some() || !self.queue.is_empty()
     }
 
     /// Whether `tool` is known to be there (yes until first looked at, so

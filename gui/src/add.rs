@@ -272,7 +272,16 @@ impl AddDialog {
 
     fn options(&self) -> media::Options {
         let mut o = self.options.clone();
-        o.file_name = self.media_name.trim().to_string();
+        // A typed extension is not doubled ("holiday.mp4" + ".mp4").
+        let typed = self.media_name.trim();
+        let stem = typed
+            .rsplit_once('.')
+            .filter(|(_, e)| {
+                ["mp4", "mkv", "webm", "mp3", "m4a", "opus", "flac", "wav", "mov", "avi"]
+                    .contains(&e.to_ascii_lowercase().as_str())
+            })
+            .map_or(typed, |(s, _)| s);
+        o.file_name = stem.trim().to_string();
         o.section = self.part.as_ref().and_then(|(a, b)| Some((parse_time(a)?, parse_time(b)?))).filter(|(a, b)| b > a);
         o
     }
@@ -311,7 +320,12 @@ impl AddDialog {
                     .filter(|(_, on)| **on)
                     .map(|(e, _)| NewDownload {
                         url: e.url.clone(),
-                        source: Source::Media(self.options()),
+                        source: Source::Media({
+                            // One name for many videos would make (2), (3), ….
+                            let mut o = self.options();
+                            o.file_name.clear();
+                            o
+                        }),
                         name: Some(e.title.clone()),
                         dir: dir.clone(),
                         thumbnail: None,
@@ -340,7 +354,7 @@ impl AddDialog {
             ui.add(egui::Label::new(RichText::new(&self.url).color(p.weak).size(theme::scale::CAPTION)).truncate());
             ui.add_space(10.0);
             // The body scrolls when the window is small: the buttons stay in view.
-            let max_h = (ctx.content_rect().height() - 190.0).max(180.0);
+            let max_h = (ctx.content_rect().height() - 170.0).max(90.0);
             let mut early = false;
             egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
             if let Some((name, when)) = &self.before {
@@ -500,6 +514,10 @@ impl AddDialog {
                         for c in Container::ALL {
                             if ui.selectable_label(o.container == c, c.name().to_uppercase()).clicked() {
                                 o.container = c;
+                                // Only an MP4 can be converted: the box is gone with it.
+                                if c != Container::Mp4 {
+                                    o.compatible = false;
+                                }
                             }
                         }
                     } else {
@@ -554,12 +572,17 @@ impl AddDialog {
                 };
                 if big && self.options.mode == Mode::Video && !self.options.compatible {
                     ui.add_space(6.0);
+                    let can_convert = self.options.container == Container::Mp4 && ffmpeg;
                     theme::notice(
                         ui,
                         p,
                         p.accent,
                         icon::INFO,
-                        trl("2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them; or tick \"Make it play in every player\" under More choices."),
+                        if can_convert {
+                            trl("2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them; or tick \"Make it play in every player\" under More choices.")
+                        } else {
+                            trl("2K and 4K videos are VP9 or AV1, which some players cannot open (QuickTime, for example). VLC opens them.")
+                        },
                     );
                 }
                 if !ffmpeg {

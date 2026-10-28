@@ -49,8 +49,8 @@ async function send(msg, button) {
   $("page").hidden = !web;
   $("pageTitle").textContent = tab?.title || page;
   $("pageTitle").title = target;
-  $("video").onclick = (e) => send({ url: target, mode: "video", referer: page }, e.target);
-  $("audio").onclick = (e) => send({ url: target, mode: "audio", referer: page }, e.target);
+  $("video").onclick = (e) => send({ url: target, mode: "video", referer: page, incognito: !!tab?.incognito }, e.target);
+  $("audio").onclick = (e) => send({ url: target, mode: "audio", referer: page, incognito: !!tab?.incognito }, e.target);
 
   // The files this page offers, by kind: all of one kind with one click.
   if (web) {
@@ -92,7 +92,7 @@ async function send(msg, button) {
     const b = li.querySelector("button");
     b.textContent = t("download");
     // Streams are read by yt-dlp; files are downloaded as they are.
-    b.onclick = () => send({ url: m.url, mode: m.type === "stream" ? "video" : "file", referer: page }, b);
+    b.onclick = () => send({ url: m.url, mode: m.type === "stream" ? "video" : "file", referer: page, incognito: !!tab?.incognito }, b);
     $("media").appendChild(li);
   }
 

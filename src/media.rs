@@ -456,20 +456,29 @@ pub struct Job<'a> {
     pub referer: Option<&'a str>,
 }
 
-/// Whether a file of this name (any type) is in `dir` already: not the parts
-/// of a download that goes on.
+/// Whether a finished file of this name is in `dir` already. Not when parts
+/// of a download that goes on are there (its own `.part`, fragments,
+/// converting): such a download is the same one, resumed. Other files that
+/// share the name (subtitles, the cover) do not count.
 fn name_taken(dir: &Path, stem: &str) -> bool {
-    let prefix = format!("{stem}.");
-    std::fs::read_dir(dir).is_ok_and(|d| {
-        d.filter_map(|e| e.ok()).any(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let unfinished = name.ends_with(".part")
-                || name.ends_with(".ytdl")
-                || name.ends_with(".temp")
-                || name.rsplit_once(".f").is_some_and(|(_, r)| r.starts_with(|c: char| c.is_ascii_digit()));
-            name.starts_with(&prefix) && !unfinished
-        })
-    })
+    const FINAL: [&str; 11] = ["mp4", "mkv", "webm", "mp3", "m4a", "opus", "flac", "wav", "mov", "avi", "ogg"];
+    let prefix = format!("{}.", stem.to_lowercase());
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    let mut finished = false;
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        let Some(rest) = name.strip_prefix(&prefix) else { continue };
+        let unfinished = rest.contains("part")
+            || rest.ends_with("ytdl")
+            || rest.starts_with("temp.")
+            || rest.ends_with(".temp")
+            || rest.strip_prefix('f').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        if unfinished {
+            return false;
+        }
+        finished |= FINAL.contains(&rest);
+    }
+    finished
 }
 
 /// yt-dlp's `-o` for `job`. The quality is in the name: the same video in
@@ -484,8 +493,13 @@ fn output_template(job: &Job, plain_name: bool) -> String {
             stem = format!("{base} ({n})");
             n += 1;
         }
-        // `%` is yt-dlp's own.
-        return format!("{}.%(ext)s", stem.replace('%', "%%"));
+        // `%` is yt-dlp's own, and `$` and a leading `~` are expanded by it.
+        let safe = stem.replace('%', "%%").replace('$', "＄");
+        let safe = match safe.strip_prefix('~') {
+            Some(rest) => format!("～{rest}"),
+            None => safe,
+        };
+        return format!("{safe}.%(ext)s");
     }
     let quality = "%(height& {}p|)s";
     if plain_name { format!("%(id)s{quality}.%(ext)s") } else { format!("%(title).150B [%(id)s]{quality}.%(ext)s") }
@@ -575,7 +589,8 @@ fn download_args(job: &Job, has_ffmpeg: bool, plain_name: bool) -> Vec<String> {
             if has_ffmpeg {
                 // To convert to MP4 the video is first joined as MKV: a video
                 // that is MP4 already is not converted.
-                let convert = o.compatible && o.container == Container::Mp4;
+                // Up to 1080p an H.264 version is chosen already: nothing to convert.
+                let convert = o.compatible && o.container == Container::Mp4 && o.max_height.is_none_or(|h| h > 1080);
                 let merged = if convert { "mkv" } else { o.container.name() };
                 a.extend(["--merge-output-format".into(), merged.into(), "--embed-metadata".into()]);
                 a.push("--embed-chapters".into());
@@ -627,7 +642,11 @@ pub fn download(job: Job, stop: &AtomicBool, report: &dyn Report) -> std::result
         // "[Errno 22] Invalid argument": the system did not accept a file
         // name or a line made of the title (emoji and the like on Windows):
         // once more with a plain name.
-        Err(e) if e.message.contains("Errno 22") && !stop.load(Ordering::Relaxed) => {
+        Err(e)
+            if (e.message.contains("Errno 22") || e.message.contains("Invalid argument"))
+                && job.options.file_name.trim().is_empty()
+                && !stop.load(Ordering::Relaxed) =>
+        {
             log::warn!("yt-dlp: {}; trying a plain file name", e.message);
             download_once(&job, stop, report, true)
         }
@@ -731,11 +750,12 @@ fn download_once(
 /// instead of ending the reading (a program whose output is no longer read
 /// fails on its next write).
 fn lossy_lines(r: impl std::io::Read) -> impl Iterator<Item = String> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
     let mut r = BufReader::new(r);
     std::iter::from_fn(move || {
         let mut buf = Vec::new();
-        match r.read_until(b'\n', &mut buf) {
+        // At most 64 KB at a time: a line without an end does not fill the memory.
+        match (&mut r).take(64 * 1024).read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => None,
             Ok(_) => Some(String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']).to_string()),
         }

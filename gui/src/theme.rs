@@ -840,7 +840,7 @@ mod tests {
                     "{name} on its tint, dark={dark} night={night}"
                 );
             }
-            for bg in [p.bg, p.card, p.card_alt, p.sidebar] {
+            for bg in [p.bg, p.card, p.card_alt, p.sidebar, p.header] {
                 assert!(contrast(p.text, bg) >= 7.0, "text, dark={dark} night={night}");
                 assert!(contrast(p.weak, bg) >= 4.5, "weak text, dark={dark} night={night}");
             }

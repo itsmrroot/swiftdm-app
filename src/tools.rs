@@ -474,8 +474,14 @@ fn install_into(tool: Tool, work: &Path, progress: OnProgress, stop: &AtomicBool
             // Looked up first: what is installed is what this names.
             let build = ffmpeg_build().ok();
             install_ffmpeg(work, progress, stop)?;
-            if let Some(b) = build {
-                let _ = std::fs::write(ffmpeg_marker(), b);
+            match build {
+                Some(b) => {
+                    let _ = std::fs::write(ffmpeg_marker(), b);
+                }
+                // Not known: the old note would be wrong.
+                None => {
+                    let _ = std::fs::remove_file(ffmpeg_marker());
+                }
             }
             Ok(())
         }

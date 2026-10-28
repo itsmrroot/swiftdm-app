@@ -3,6 +3,25 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.5
+
+Fixes from a full round of code reviews:
+
+- **Browser extension:**
+  - SwiftDM no longer empties and rewrites the extension's files every time it starts (a browser starting at the same moment could find the manifest missing). Only changed files are written, by renaming a finished file into place.
+  - After SwiftDM is updated, the extension reloads itself once, so the browser stops using the old manifest.
+  - A click on a slow SwiftDM no longer opens the same download twice.
+  - Downloads from a private window no longer send the normal window's login.
+  - A badge that cannot be shown no longer turns a hand-over that worked into "failed".
+- **Updates:** "Restart now" closes SwiftDM properly first (downloads paused, list saved) and then starts the installer. On macOS the old app is only removed after the new one is in place, and kept if that fails. On Linux the package is checked and installed from a root-owned copy. A new update check is not started while one is ready to install.
+- **Videos:**
+  - Resuming a download with a chosen file name no longer starts over because of subtitle or cover files with the same name.
+  - A typed extension ("clip.mp4") is not doubled, and names with `$` or `~` stay in the download folder.
+  - "Make it play in every player" only converts 2K and 4K (up to 1080p an H.264 version is chosen already).
+  - The retry with a plain file name also catches "Invalid argument".
+- The New download window and the Update button: the 4K notice matches what is offered; an unticked conversion is forgotten when the format changes; Cancel also stops a running update check; the notice text in Arabic matches the menu.
+- The release is refused when the extension's version is not the tag's.
+
 ## 1.10.4
 
 - **The New download window fits small windows:** its choices scroll, and Cancel and Download stay in view. Before, with "More choices" open it could be taller than the window and hide its top and bottom.
