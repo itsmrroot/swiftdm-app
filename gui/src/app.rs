@@ -29,6 +29,9 @@ use crate::update::{self, Updater};
 /// The first window: small enough that no system maximizes it on a small
 /// screen; [`App::fit_to_screen`] makes it larger on large ones.
 pub const DEFAULT_SIZE: [f32; 2] = [1000.0, 640.0];
+/// The room the menu bar (with the logo) has in the header, so that the
+/// buttons never cover it.
+const MENU_WIDTH: f32 = 360.0;
 const LARGE_SIZE: [f32; 2] = [1180.0, 760.0];
 pub const MIN_SIZE: [f32; 2] = [820.0, 560.0];
 const SETTINGS_KEY: &str = "settings";
@@ -1055,7 +1058,14 @@ impl App {
     fn header(&mut self, ui: &mut Ui, p: &Palette) {
         // Narrow (a small window, a large zoom): the chips are symbols only
         // (their tooltips say the rest) and the name goes.
-        let compact = ui.available_width() < 900.0;
+        // Windows and Linux have no menu bar of their own: it sits in this
+        // row after the logo, like a title bar. Development aid:
+        // SWIFTDM_WINDOW_MENU shows it on macOS too.
+        let window_menu =
+            !cfg!(target_os = "macos") || (cfg!(debug_assertions) && std::env::var_os("SWIFTDM_WINDOW_MENU").is_some());
+        // What the chips have: the row without the menu.
+        let chips_width = ui.available_width() - if window_menu { MENU_WIDTH } else { 0.0 };
+        let compact = chips_width < 900.0;
         // Right to left: the name on the right, the chips on the left.
         let rtl = i18n::is_rtl();
         let (outer, inner) = if rtl {
@@ -1063,17 +1073,26 @@ impl App {
         } else {
             (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center))
         };
-        // Windows and Linux have no menu bar of their own: it sits in this
-        // row after the logo, like a title bar. Development aid:
-        // SWIFTDM_WINDOW_MENU shows it on macOS too.
-        let window_menu =
-            !cfg!(target_os = "macos") || (cfg!(debug_assertions) && std::env::var_os("SWIFTDM_WINDOW_MENU").is_some());
         ui.with_layout(outer, |ui| {
             if !window_menu {
                 ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
                 ui.add_space(2.0);
                 if !compact {
                     ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
+                }
+            }
+            // First, with room of its own: the chips take what is left of the
+            // row (and are symbols only when that is not much).
+            if window_menu {
+                let (after_done, theme) = (self.power.after_done, self.settings.theme);
+                let size = Vec2::new(MENU_WIDTH, ui.available_height());
+                let chosen = ui
+                    .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+                        crate::menu::window_menu(ui, after_done, theme, &self.logo)
+                    })
+                    .inner;
+                if let Some(c) = chosen {
+                    self.run(&ui.ctx().clone(), c);
                 }
             }
             ui.with_layout(inner, |ui| {
@@ -1263,14 +1282,8 @@ impl App {
                     self.run(&ui.ctx().clone(), Command::AddToBrowser);
                 }
                 if self.updater.available().is_some() {
-                    self.updater.button(ui, p);
-                }
-                // Last: the menu takes the room the chips left.
-                if window_menu {
-                    let (after_done, theme) = (self.power.after_done, self.settings.theme);
-                    if let Some(c) = crate::menu::window_menu(ui, after_done, theme, &self.logo) {
-                        self.run(&ui.ctx().clone(), c);
-                    }
+                    // Tight: the symbol only (the tooltip says the rest).
+                    self.updater.button(ui, p, chips_width < 560.0);
                 }
             });
         });
