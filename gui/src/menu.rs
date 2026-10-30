@@ -115,9 +115,14 @@ fn shortcuts(ctx: &egui::Context, out: &mut Vec<Command>) {
 }
 
 /// The menu bar inside the window, for Windows and Linux (which have no
-/// menu bar of their own): the same menus as on macOS. Returns the command
-/// chosen.
-pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice) -> Option<Command> {
+/// menu bar of their own): the same menus as on macOS, after the logo.
+/// Returns the command chosen.
+pub fn window_menu(
+    ui: &mut egui::Ui,
+    after_done: AfterDone,
+    theme: ThemeChoice,
+    logo: &egui::TextureHandle,
+) -> Option<Command> {
     use crate::i18n::tr;
     let chosen = std::cell::Cell::new(None);
     let item = |ui: &mut egui::Ui, label: &str, keys: &str, c: Command| {
@@ -131,6 +136,8 @@ pub fn window_menu(ui: &mut egui::Ui, after_done: AfterDone, theme: ThemeChoice)
         }
     };
     egui::MenuBar::new().ui(ui, |ui| {
+        ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(30.0)));
+        ui.add_space(4.0);
         ui.menu_button(tr("File"), |ui| {
             item(ui, &crate::i18n::ellipsis(tr("New download")), "Ctrl+N", Command::NewDownload);
             item(ui, tr("Download copied link"), "Ctrl+Shift+V", Command::PasteLink);
