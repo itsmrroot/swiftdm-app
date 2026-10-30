@@ -47,7 +47,7 @@ pub fn sanitize_filename(name: &str) -> String {
         .collect();
     out = out.trim().trim_end_matches(['.', ' ']).to_string();
     // Windows reserves these names whatever the extension.
-    let stem = out.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let stem = out.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
     let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
         || (stem.len() == 4
             && (stem.starts_with("COM") || stem.starts_with("LPT"))
@@ -480,6 +480,7 @@ mod tests {
         assert_eq!(sanitize_filename("a/b:c?.mp4"), "a_b_c_.mp4");
         assert_eq!(sanitize_filename("  name.  "), "name");
         assert_eq!(sanitize_filename("CON.txt"), "_CON.txt");
+        assert_eq!(sanitize_filename("con .txt"), "_con .txt");
         assert_eq!(sanitize_filename(""), "download");
         let long = format!("{}.mp4", "x".repeat(300));
         let s = sanitize_filename(&long);
