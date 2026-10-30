@@ -1952,8 +1952,16 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Running downloads continue at the next start.
         self.manager.shutdown();
-        // An update chosen to be installed when the app closes.
-        self.updater.install_on_close();
+        // An update chosen to be installed when the app closes. Everything
+        // that matters is saved by now, so once the installer has been
+        // handed the update, exit at once instead of returning to the slow
+        // GPU/window teardown: on a machine without a real GPU (a VM, e.g.)
+        // that teardown can run long enough for a self-replacing installer
+        // to find this process still holding its own files open, silently
+        // skip the overwrite and relaunch the old version.
+        if self.updater.install_on_close() {
+            std::process::exit(0);
+        }
     }
 }
 

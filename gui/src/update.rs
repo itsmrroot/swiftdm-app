@@ -672,13 +672,21 @@ impl Updater {
     }
 
     /// Called when the app closes: an update that was to be installed then.
-    pub fn install_on_close(&mut self) {
-        if self.on_close
-            && let Err(e) = self.start_install(self.relaunch)
-        {
-            log::warn!("the update could not be installed: {e:#}");
-        }
+    /// Returns whether the installer was handed the update and is now
+    /// racing this process to replace its files — the caller must exit at
+    /// once, skipping the GPU/window teardown that would otherwise give
+    /// the installer time to find this app still holding them open.
+    pub fn install_on_close(&mut self) -> bool {
+        let started = self.on_close
+            && match self.start_install(self.relaunch) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("the update could not be installed: {e:#}");
+                    false
+                }
+            };
         self.ready = None;
+        started
     }
 
     /// The version a newer release has, once one was found.
