@@ -61,7 +61,10 @@ license-file = "assets/LICENSE.txt"
 icons = ["assets/swiftdm.icns", "assets/swiftdm.ico", "assets/icon.png"]
 # The command line comes along for scripting and keyboard use.
 binaries = [{ path = "swiftdm-gui", main = true }, { path = "swiftdm", main = false }]
-resources = [{ src = "assets/fonts/OFL.txt", target = "OFL-NotoSansArabic.txt" }]
+resources = [
+    { src = "assets/fonts/OFL.txt", target = "OFL-NotoSansArabic.txt" },
+    { src = "assets/fonts/LICENSE-Inter.txt", target = "OFL-Inter.txt" },
+]
 
 [package.metadata.packager.macos]
 minimum-system-version = "10.15"
