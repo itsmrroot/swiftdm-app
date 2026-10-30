@@ -305,7 +305,10 @@ fn postprocess_stage(line: &str) -> Option<&'static str> {
 fn base_command(ytdlp: &Path) -> std::process::Command {
     let mut cmd = tools::command(ytdlp);
     // Warnings stay on: a missing JavaScript runtime is only a warning.
-    cmd.args(["--ignore-config", "--color", "never", "--no-playlist"])
+    // `--encoding`: yt-dlp.exe prints in the ANSI code page when piped and
+    // ignores the variables below, so "ß" came back as one wrong byte and an
+    // emoji as nothing, and the stored file path pointed to no file.
+    cmd.args(["--ignore-config", "--color", "never", "--no-playlist", "--encoding", "utf-8"])
         // Titles in any language, also on Windows.
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
@@ -924,6 +927,14 @@ pub fn looks_like_file(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yt_dlp_is_told_to_print_utf8() {
+        let cmd = base_command(Path::new("yt-dlp"));
+        let args: Vec<_> = cmd.get_args().collect();
+        let at = args.iter().position(|a| *a == "--encoding").expect("--encoding");
+        assert_eq!(args[at + 1], "utf-8");
+    }
 
     #[test]
     fn progress_lines() {
