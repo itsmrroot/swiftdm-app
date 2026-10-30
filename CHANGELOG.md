@@ -3,6 +3,11 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.7
+
+- **Windows:** a file name like "CON .txt" (a space before the dot) is now treated as the reserved name it is for Windows, so saving it no longer fails.
+- **Windows and macOS:** the installer and the app now include the license of the Inter font.
+
 ## 1.10.6
 
 - **Windows:** file names with letters like "ß" or with emoji are no longer saved wrong in the list: the finished download now points to the real file.
