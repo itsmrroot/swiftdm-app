@@ -3,6 +3,11 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.6
+
+- **Windows:** file names with letters like "ß" or with emoji are no longer saved wrong in the list: the finished download now points to the real file.
+- **Windows and Linux:** the logo and the menu (File, Edit, View, …) share one row with the buttons at the top, like a title bar.
+
 ## 1.10.5
 
 Fixes from a full round of code reviews:
