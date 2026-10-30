@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.9
+
+- **Windows and Linux:** at the top of the window, the buttons (and "Update to …") no longer cover the menu (File, Edit, View, …). In a small window the buttons show symbols only, and the update button too, with its text as a tooltip.
+
 ## 1.10.8
 
 - **Updates:** when GitHub refuses too many update checks from one network, SwiftDM now says so ("GitHub allows only a limited number of update checks per hour from one network. Try again after 14:30.") instead of "http status: 403". Other errors still show their status.
