@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use eframe::egui::{self, Align, Layout, RichText, Ui};
 use egui_phosphor::regular as icon;
 use serde::Deserialize;
@@ -192,14 +192,102 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn agent() -> ureq::Agent {
+    agent_with(true)
+}
+
+/// `status_is_error` false: a 403 or 429 comes back as an answer whose
+/// headers can be read (the check tells a rate limit from other refusals).
+fn agent_with(status_is_error: bool) -> ureq::Agent {
     ureq::Agent::config_builder()
         .user_agent(format!("swiftdm-gui/{}", env!("CARGO_PKG_VERSION")))
+        .http_status_as_error(status_is_error)
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         // A stalled download must end (and so be cancellable) some day.
         .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
         .build()
         .into()
+}
+
+/// Where the latest release is asked for. Debug builds can point
+/// `SWIFTDM_UPDATE_URL` at a local server to test the answers.
+fn latest_url() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("SWIFTDM_UPDATE_URL") {
+        return url;
+    }
+    LATEST.to_string()
+}
+
+/// How GitHub refused the check.
+#[derive(Debug, PartialEq)]
+enum Refusal {
+    /// Too many requests from this network; the time (Unix seconds) the
+    /// limit ends, when GitHub said.
+    Limited(Option<i64>),
+    Other,
+}
+
+/// Tells GitHub's limit (60 anonymous requests an hour per address) from
+/// other refusals. The inputs are the status and the header values
+/// `x-ratelimit-remaining`, `retry-after` and `x-ratelimit-reset`.
+fn refusal(status: u16, remaining: Option<&str>, retry_after: Option<&str>, reset: Option<&str>, now: i64) -> Refusal {
+    let number = |v: Option<&str>| v.and_then(|v| v.trim().parse::<i64>().ok());
+    let limited =
+        status == 429 || (status == 403 && (retry_after.is_some() || remaining.is_some_and(|r| r.trim() == "0")));
+    if !limited {
+        return Refusal::Other;
+    }
+    let end = number(retry_after).map(|s| now.saturating_add(s)).or_else(|| number(reset));
+    // A time already past says nothing useful.
+    Refusal::Limited(end.filter(|t| *t > now))
+}
+
+/// The check was refused because of GitHub's limit.
+#[derive(Debug)]
+pub struct RateLimited {
+    reset: Option<i64>,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.reset {
+            Some(t) => write!(f, "GitHub's limit for update checks is reached (until Unix time {t})"),
+            None => write!(f, "GitHub's limit for update checks is reached"),
+        }
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
+impl RateLimited {
+    /// The sentence for the user, in the language of the app.
+    fn message(&self) -> String {
+        match self.reset.and_then(clock) {
+            Some(time) => trlf(
+                "GitHub allows only a limited number of update checks per hour from one network. Try again after {time}.",
+                &[("time", &time)],
+            ),
+            None => tr(
+                "GitHub allows only a limited number of update checks per hour from one network. Try again in a while.",
+            )
+            .to_string(),
+        }
+    }
+}
+
+/// A Unix time as the local "HH:MM".
+fn clock(unix: i64) -> Option<String> {
+    let time = chrono::DateTime::from_timestamp(unix, 0)?.with_timezone(&chrono::Local);
+    Some(time.format("%H:%M").to_string())
+}
+
+/// The text to show for a failed check.
+pub fn check_error_message(e: &anyhow::Error) -> String {
+    match e.downcast_ref::<RateLimited>() {
+        Some(limited) => limited.message(),
+        None => trlf("Could not check for updates: {error}", &[("error", &i18n::engine(&format!("{e:#}")))]),
+    }
 }
 
 /// One line of "what's new".
@@ -253,13 +341,30 @@ pub fn parse_notes(body: &str) -> Vec<Note> {
 
 /// Asks GitHub for the latest release. `None` means this is the newest.
 pub fn check() -> Result<Option<Release>> {
-    let text = agent()
-        .get(LATEST)
+    let mut response = agent_with(false)
+        .get(&latest_url())
         .header("Accept", "application/vnd.github+json")
         .call()
-        .context("could not reach GitHub")?
-        .body_mut()
-        .read_to_string()?;
+        .context("could not reach GitHub")?;
+    let status = response.status().as_u16();
+    if status >= 400 {
+        let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let (remaining, retry_after, reset) =
+            (header("x-ratelimit-remaining"), header("retry-after"), header("x-ratelimit-reset"));
+        return Err(
+            match refusal(
+                status,
+                remaining.as_deref(),
+                retry_after.as_deref(),
+                reset.as_deref(),
+                chrono::Utc::now().timestamp(),
+            ) {
+                Refusal::Limited(reset) => RateLimited { reset }.into(),
+                Refusal::Other => anyhow!("GitHub answered with http status {status}"),
+            },
+        );
+    }
+    let text = response.body_mut().read_to_string()?;
     let gh: GhRelease = serde_json::from_str(&text).context("unexpected answer from GitHub")?;
     let version = gh.tag_name.trim_start_matches('v').to_string();
     if gh.draft || gh.prerelease || !is_newer(&version, current()) {
@@ -509,12 +614,7 @@ impl Updater {
                     self.dialog |= manual;
                 }
                 Ok(None) => self.latest = true,
-                Err(e) if manual => {
-                    self.error = Some(trlf(
-                        "Could not check for updates: {error}",
-                        &[("error", &i18n::engine(&format!("{e:#}")))],
-                    ))
-                }
+                Err(e) if manual => self.error = Some(check_error_message(&e)),
                 Err(e) => log::info!("update check failed: {e:#}"),
             }
         }
@@ -778,6 +878,102 @@ fn weak(ui: &mut Ui, p: &Palette, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_limit_is_told_from_other_refusals() {
+        let now = 1_000;
+        let limited = |end| Refusal::Limited(end);
+        // Too many requests.
+        assert_eq!(refusal(429, None, None, None, now), limited(None));
+        assert_eq!(refusal(429, None, Some("120"), None, now), limited(Some(1_120)));
+        // The anonymous limit: 403 with nothing left.
+        assert_eq!(refusal(403, Some("0"), None, Some("5000"), now), limited(Some(5_000)));
+        assert_eq!(refusal(403, Some("0"), None, None, now), limited(None));
+        // Retry-After wins over the reset time.
+        assert_eq!(refusal(403, Some("0"), Some("60"), Some("5000"), now), limited(Some(1_060)));
+        assert_eq!(refusal(403, None, Some("60"), None, now), limited(Some(1_060)));
+        // A time that is past, or not a number, is not shown.
+        assert_eq!(refusal(403, Some("0"), None, Some("999"), now), limited(None));
+        assert_eq!(refusal(403, Some("0"), None, Some("soon"), now), limited(None));
+        assert_eq!(refusal(429, None, Some("Wed, 21 Oct 2026 07:28:00 GMT"), None, now), limited(None));
+        // Anything else keeps its plain error.
+        assert_eq!(refusal(403, None, None, None, now), Refusal::Other);
+        assert_eq!(refusal(403, Some("12"), None, Some("5000"), now), Refusal::Other);
+        assert_eq!(refusal(404, Some("0"), None, None, now), Refusal::Other);
+        assert_eq!(refusal(500, Some("0"), Some("60"), None, now), Refusal::Other);
+        assert_eq!(refusal(503, None, Some("60"), None, now), Refusal::Other);
+    }
+
+    #[test]
+    fn the_reset_time_is_a_clock_time() {
+        let t = clock(1_793_364_780).unwrap();
+        assert_eq!(t.len(), 5);
+        assert_eq!(&t[2..3], ":");
+    }
+
+    fn refused() -> anyhow::Error {
+        match check() {
+            Err(e) => e,
+            Ok(_) => panic!("the check was not refused"),
+        }
+    }
+
+    /// The real path: `check()` asks a local server that answers like GitHub
+    /// when it refuses (the variable only works in debug builds).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn refused_checks_are_told_apart() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/releases/latest", listener.local_addr().unwrap());
+        let soon = chrono::Utc::now().timestamp() + 600;
+        let body = r#"{"tag_name":"v0.0.1","html_url":"x","draft":false,"prerelease":false,"assets":[]}"#;
+        let answers = vec![
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {soon}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+        ];
+        let server = std::thread::spawn(move || {
+            for answer in answers {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                let _ = s.read(&mut request);
+                s.write_all(answer.as_bytes()).unwrap();
+            }
+        });
+        // Only this test sets it, and only `check()` reads it.
+        unsafe { std::env::set_var("SWIFTDM_UPDATE_URL", &url) };
+
+        let e = refused();
+        let limited = e.downcast_ref::<RateLimited>().expect("a rate limit");
+        assert_eq!(limited.reset, Some(soon));
+        assert!(check_error_message(&e).starts_with("GitHub allows only a limited number"));
+        assert!(check_error_message(&e).contains("Try again after "));
+
+        let e = refused();
+        assert!(e.downcast_ref::<RateLimited>().is_none(), "a plain 403 is not a rate limit");
+        assert!(format!("{e:#}").contains("403"), "{e:#}");
+
+        let e = refused();
+        assert!(e.downcast_ref::<RateLimited>().is_some_and(|l| l.reset.is_none()));
+        assert!(check_error_message(&e).ends_with("Try again in a while."));
+
+        let e = refused();
+        assert!(format!("{e:#}").contains("500"), "{e:#}");
+
+        assert!(check().unwrap().is_none(), "a good answer still works");
+        server.join().unwrap();
+        unsafe { std::env::remove_var("SWIFTDM_UPDATE_URL") };
+    }
 
     #[test]
     fn versions_compare_by_number() {
