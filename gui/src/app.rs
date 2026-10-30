@@ -1063,11 +1063,18 @@ impl App {
         } else {
             (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center))
         };
+        // Windows and Linux have no menu bar of their own: it sits in this
+        // row after the logo, like a title bar. Development aid:
+        // SWIFTDM_WINDOW_MENU shows it on macOS too.
+        let window_menu =
+            !cfg!(target_os = "macos") || (cfg!(debug_assertions) && std::env::var_os("SWIFTDM_WINDOW_MENU").is_some());
         ui.with_layout(outer, |ui| {
-            ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
-            ui.add_space(2.0);
-            if !compact {
-                ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
+            if !window_menu {
+                ui.add(egui::Image::new(&self.logo).fit_to_exact_size(Vec2::splat(30.0)));
+                ui.add_space(2.0);
+                if !compact {
+                    ui.label(theme::semibold("SwiftDM", theme::scale::LEAD).color(p.text));
+                }
             }
             ui.with_layout(inner, |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -1257,6 +1264,13 @@ impl App {
                 }
                 if self.updater.available().is_some() {
                     self.updater.button(ui, p);
+                }
+                // Last: the menu takes the room the chips left.
+                if window_menu {
+                    let (after_done, theme) = (self.power.after_done, self.settings.theme);
+                    if let Some(c) = crate::menu::window_menu(ui, after_done, theme, &self.logo) {
+                        self.run(&ui.ctx().clone(), c);
+                    }
                 }
             });
         });
@@ -1851,22 +1865,6 @@ impl eframe::App for App {
             self.browser_seen = crate::browser::last_seen();
         }
 
-        // Windows and Linux have no menu bar of their own: one in the window.
-        // Development aid: SWIFTDM_WINDOW_MENU shows it on macOS too.
-        let window_menu =
-            !cfg!(target_os = "macos") || (cfg!(debug_assertions) && std::env::var_os("SWIFTDM_WINDOW_MENU").is_some());
-        if window_menu {
-            let (after_done, theme) = (self.power.after_done, self.settings.theme);
-            let chosen = egui::Panel::top("menubar")
-                .resizable(false)
-                .show_separator_line(false)
-                .frame(Frame::new().fill(p.bar()).inner_margin(Margin::symmetric(8, 2)))
-                .show(ui, |ui| crate::menu::window_menu(ui, after_done, theme))
-                .inner;
-            if let Some(c) = chosen {
-                self.run(&ctx, c);
-            }
-        }
         egui::Panel::top("header")
             .exact_size(54.0)
             .resizable(false)
