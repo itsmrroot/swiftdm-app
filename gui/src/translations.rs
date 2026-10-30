@@ -217,6 +217,14 @@ pub const ARABIC: &[(&str, &str)] = &[
         "نزّل فقط ما يحق لك تنزيله. واحترم شروط المواقع التي تستخدمها.",
     ),
     ("Could not check for updates: {error}", "تعذّر البحث عن تحديثات: {error}"),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again after {time}.",
+        "يسمح GitHub بعدد محدود فقط من عمليات البحث عن تحديثات في الساعة من شبكة واحدة. حاول مرة أخرى بعد {time}.",
+    ),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again in a while.",
+        "يسمح GitHub بعدد محدود فقط من عمليات البحث عن تحديثات في الساعة من شبكة واحدة. حاول مرة أخرى بعد قليل.",
+    ),
     ("Update to {version}", "التحديث إلى {version}"),
     ("Check for updates", "البحث عن تحديثات"),
     ("Checking for updates…", "جارٍ البحث عن تحديثات…"),
@@ -908,6 +916,14 @@ pub const GERMAN: &[(&str, &str)] = &[
         "Laden Sie nur herunter, wozu Sie berechtigt sind. Beachten Sie die Bedingungen der Seiten, die Sie nutzen.",
     ),
     ("Could not check for updates: {error}", "Updates konnten nicht geprüft werden: {error}"),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again after {time}.",
+        "GitHub erlaubt nur eine begrenzte Anzahl von Update-Prüfungen pro Stunde aus einem Netzwerk. Versuchen Sie es nach {time} erneut.",
+    ),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again in a while.",
+        "GitHub erlaubt nur eine begrenzte Anzahl von Update-Prüfungen pro Stunde aus einem Netzwerk. Versuchen Sie es später erneut.",
+    ),
     ("Update to {version}", "Auf {version} aktualisieren"),
     ("Check for updates", "Nach Updates suchen"),
     ("Checking for updates…", "Suche nach Updates…"),
@@ -1620,6 +1636,14 @@ pub const TURKISH: &[(&str, &str)] = &[
         "Yalnızca hakkınız olanı indirin. Kullandığınız sitelerin koşullarına uyun.",
     ),
     ("Could not check for updates: {error}", "Güncellemeler denetlenemedi: {error}"),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again after {time}.",
+        "GitHub, bir ağdan saatte yalnızca sınırlı sayıda güncelleme denetimine izin verir. {time} sonrasında tekrar deneyin.",
+    ),
+    (
+        "GitHub allows only a limited number of update checks per hour from one network. Try again in a while.",
+        "GitHub, bir ağdan saatte yalnızca sınırlı sayıda güncelleme denetimine izin verir. Bir süre sonra tekrar deneyin.",
+    ),
     ("Update to {version}", "{version} sürümüne güncelle"),
     ("Check for updates", "Güncellemeleri denetle"),
     ("Checking for updates…", "Güncellemeler denetleniyor…"),
