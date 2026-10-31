@@ -3,6 +3,10 @@
 The newest version is first. Each `## x.y.z` section is the text of that release's page and of the
 "What's new" in the app's update window: short lines, in plain words.
 
+## 1.10.10
+
+- **Windows:** fixed a rare case where updating could restart the app but leave the old version running instead of the new one — most likely on a virtual machine without a graphics card.
+
 ## 1.10.9
 
 - **Windows and Linux:** at the top of the window, the buttons (and "Update to …") no longer cover the menu (File, Edit, View, …). In a small window the buttons show symbols only, and the update button too, with its text as a tooltip.
